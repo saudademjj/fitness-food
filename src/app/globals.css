@@ -1,0 +1,74 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 144 30% 95%;
+    --foreground: 160 20% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 160 20% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 160 20% 10%;
+    --primary: 150 50% 40%;
+    --primary-foreground: 150 30% 98%;
+    --secondary: 144 20% 90%;
+    --secondary-foreground: 150 50% 20%;
+    --muted: 144 10% 92%;
+    --muted-foreground: 160 10% 40%;
+    --accent: 98 62% 57%;
+    --accent-foreground: 98 20% 10%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 150 20% 88%;
+    --input: 150 20% 88%;
+    --ring: 150 50% 40%;
+    --radius: 1rem;
+    --chart-1: 150 50% 40%;
+    --chart-2: 98 62% 57%;
+    --chart-3: 160 30% 30%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+  }
+  .dark {
+    --background: 160 20% 5%;
+    --foreground: 150 20% 98%;
+    --card: 160 20% 8%;
+    --card-foreground: 150 20% 98%;
+    --popover: 160 20% 8%;
+    --popover-foreground: 150 20% 98%;
+    --primary: 150 50% 50%;
+    --primary-foreground: 150 20% 5%;
+    --secondary: 160 20% 15%;
+    --secondary-foreground: 150 20% 98%;
+    --muted: 160 20% 12%;
+    --muted-foreground: 160 10% 60%;
+    --accent: 98 62% 57%;
+    --accent-foreground: 160 20% 5%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 150 20% 98%;
+    --border: 160 20% 15%;
+    --input: 160 20% 15%;
+    --ring: 150 50% 50%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-body transition-colors duration-300;
+  }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+@keyframes float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-5px); }
+  100% { transform: translateY(0px); }
+}

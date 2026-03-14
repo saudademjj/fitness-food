@@ -1,0 +1,23 @@
+
+{
+  "placeholderImages": [
+    {
+      "id": "healthy-food",
+      "description": "A variety of healthy foods including vegetables and proteins",
+      "imageUrl": "https://picsum.photos/seed/food1/800/600",
+      "imageHint": "healthy food"
+    },
+    {
+      "id": "protein-source",
+      "description": "Chicken breast and eggs on a table",
+      "imageUrl": "https://picsum.photos/seed/protein/400/300",
+      "imageHint": "protein food"
+    },
+    {
+      "id": "carbs-source",
+      "description": "Whole grain bread and pasta",
+      "imageUrl": "https://picsum.photos/seed/carbs/400/300",
+      "imageHint": "carbohydrate food"
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+
+'use client';
+
+import React, { useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { Plus, Sparkles, Loader2 } from 'lucide-react';
+import { parseDescriptionAction } from '@/app/actions/food';
+import { useToast } from '@/hooks/use-toast';
+import { type ParseFoodDescriptionOutput } from '@/ai/flows/parse-food-description-flow';
+
+interface FoodInputFormProps {
+  onFoodsParsed: (foods: ParseFoodDescriptionOutput) => void;
+}
+
+export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
+  const [description, setDescription] = useState('');
+  const [isParsing, setIsParsing] = useState(false);
+  const { toast } = useToast();
+
+  const handleParse = async () => {
+    if (!description.trim()) return;
+
+    setIsParsing(true);
+    try {
+      const results = await parseDescriptionAction(description);
+      if (results && results.length > 0) {
+        onFoodsParsed(results);
+        setDescription('');
+      } else {
+        toast({
+          title: "未能识别",
+          description: "抱歉，没能从您的描述中解析出食物。请尝试更具体一些。",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      const description =
+        error instanceof Error
+          ? error.message
+          : "连接AI服务时出现错误，请稍后再试。";
+
+      toast({
+        title: "解析失败",
+        description,
+        variant: "destructive",
+      });
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
+  return (
+    <Card className="border-none shadow-md mb-8">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-xl flex items-center gap-2">
+          <Sparkles className="h-5 w-5 text-accent" />
+          食物录入
+        </CardTitle>
+        <CardDescription>
+          用自然语言描述您吃了什么（例如：“一个苹果，150克鸡胸肉”）
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-col gap-4">
+          <Textarea
+            placeholder="今天吃了什么？"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className="min-h-[100px] bg-secondary/30 border-none focus-visible:ring-accent"
+          />
+          <Button 
+            onClick={handleParse} 
+            disabled={isParsing || !description.trim()}
+            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-semibold py-6 rounded-xl shadow-md transition-all active:scale-95"
+          >
+            {isParsing ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                正在智能解析中...
+              </>
+            ) : (
+              <>
+                <Plus className="mr-2 h-4 w-4" />
+                记录美味
+              </>
+            )}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

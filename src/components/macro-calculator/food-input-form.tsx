@@ -11,7 +11,10 @@ import { useToast } from '@/hooks/use-toast';
 import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
 
 interface FoodInputFormProps {
-  onFoodsParsed: (foods: ParseFoodDescriptionOutput) => void;
+  onFoodsParsed: (payload: {
+    foods: ParseFoodDescriptionOutput;
+    description: string;
+  }) => void;
 }
 
 export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
@@ -26,7 +29,10 @@ export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
     try {
       const results = await parseDescriptionAction(description);
       if (results && results.length > 0) {
-        onFoodsParsed(results);
+        onFoodsParsed({
+          foods: results,
+          description,
+        });
         setDescription('');
       } else {
         toast({

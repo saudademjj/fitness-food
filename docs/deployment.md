@@ -52,7 +52,15 @@ PGPASSWORD=<your-password>
 1. 安装 Node.js 20 和 Nginx
 2. 把本仓库部署到服务器
 3. 服务器上配置 `.env.local`
-4. 执行：
+4. 执行数据库迁移：
+
+   ```bash
+   psql "$DATABASE_URL" -f db/migrations/20260316_food_system_upgrade.sql
+   psql "$DATABASE_URL" -f db/migrations/20260316_nutrition_profile23_upgrade.sql
+   bash ./db/refresh_materialized_views.sh
+   ```
+
+5. 构建并启动应用：
 
    ```bash
    npm install
@@ -60,8 +68,17 @@ PGPASSWORD=<your-password>
    npm run start
    ```
 
-5. 用 `systemd` 托管 Next.js
-6. 用 Nginx 反向代理到 Next.js 端口，并加 HTTPS
+   如果跳出“营养物化视图为空”的报错，说明 `core.app_food_profile_23 / core.app_recipe_profile_23 / core.app_catalog_profile_23` 还没有 refresh 成功，先重新执行上面的 refresh 脚本再启动。
+
+6. 用 `systemd` 托管 Next.js
+7. 安装 `deploy/systemd/fitness-food-refresh.service` 与 `deploy/systemd/fitness-food-refresh.timer`，启用每日 04:10 的物化视图刷新
+
+   如果这些物化视图的 owner 是 `postgres`，在服务器 `.env.local` 里额外加一行：
+
+   ```env
+   PG_REFRESH_AS_POSTGRES=1
+   ```
+8. 用 Nginx 反向代理到 Next.js 端口，并加 HTTPS
 
 ## 4. 成本控制建议
 

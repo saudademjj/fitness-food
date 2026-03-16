@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Fitness Food materialized views
+After=network.target
+
+[Service]
+Type=oneshot
+User=lixdj
+WorkingDirectory=/home/lixdj/food_fitness
+EnvironmentFile=/home/lixdj/food_fitness/.env.local
+ExecStart=/usr/bin/bash /home/lixdj/food_fitness/db/refresh_materialized_views.sh

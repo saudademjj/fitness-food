@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily refresh for Fitness Food materialized views
+
+[Timer]
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+Unit=fitness-food-refresh.service
+
+[Install]
+WantedBy=timers.target

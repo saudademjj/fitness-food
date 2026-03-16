@@ -1,0 +1,216 @@
+export const DIRECT_PARSE_MAX_LENGTH = 28;
+export const MULTI_ITEM_SEPARATOR = /[，,、；;\/]/;
+export const COMPOSITE_FOOD_PATTERN =
+  /(炒饭|蛋炒饭|盖饭|拌饭|焖饭|烩饭|煲仔饭|焗饭|炒面|拌面|汤面|拉面|米线|河粉|炒粉|意面|三明治|汉堡|披萨|卷饼|卷|沙拉|套餐|便当|拼盘|汤|火锅|麻辣烫|冒菜|砂锅|小炒|炒菜|鸡丁|肉末|盖浇)/i;
+export const UNSAFE_FUZZY_MATCH_PATTERN =
+  /(婴儿|婴幼儿|快餐|三明治|卷饼|汤|罐装|填料|调味|混合|饼干|松饼|百吉饼|潜艇|咖喱|餐厅|冷冻|晚餐|早餐|幼儿|泥|面包|汉堡)/i;
+export const DANGEROUS_SUFFIX_PATTERN =
+  /(醋|填料|浇头|布丁|卷|调味|调味料|调味粉|调味酱|婴儿食品|泥|果汁|饮料|奶昔|蘸料|酱|派)$/i;
+
+const QUANTITY_PATTERN =
+  /(?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)/g;
+const PREFIX_QUANTITY_PATTERN =
+  /^((?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克))\s*(.+)$/i;
+const SUFFIX_QUANTITY_PATTERN =
+  /^(.+?)\s*((?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:g|克|ml|毫升))$/i;
+const CONNECTOR_PATTERN = /(和|以及|还有|外加|配上|搭配|配|跟)/g;
+const CONNECTOR_RIGHT_QUANTITY_PATTERN =
+  /^\s*(?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)/i;
+
+export type ExtractedFoodCandidate = {
+  foodName: string;
+  quantityDescription: string;
+};
+
+export function normalizeText(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(/\s+/g, ' ')
+    .replace(/[。！？!?]/g, '')
+    .trim();
+}
+
+export function normalizeLookupText(value: string): string {
+  return normalizeText(value).toLowerCase().replace(/\s+/g, '');
+}
+
+export function normalizeItemSeparators(value: string): string {
+  const normalized = normalizeText(value).replace(CONNECTOR_PATTERN, (connector, _group, offset, source) => {
+    const rightContext = source.slice(offset + connector.length);
+    return CONNECTOR_RIGHT_QUANTITY_PATTERN.test(rightContext) ? '、' : connector;
+  });
+
+  return normalized
+    .replace(/[，,；;\/]+/g, '、')
+    .replace(/、+/g, '、')
+    .replace(/^、|、$/g, '')
+    .trim();
+}
+
+export function stripContext(description: string): string {
+  let text = normalizeText(description);
+  const replacements = [
+    /^(今天早上|今天中午|今天晚上|今天早餐|今天午餐|今天晚餐|今早|昨晚|昨天早上|昨天中午|昨天晚上|早上|中午|晚上|早餐|午餐|晚餐|夜宵|宵夜|今天|昨天)\s*/i,
+    /^(我今天|我刚刚|我刚才|我)\s*/i,
+    /^(吃了|喝了|吃|喝|来了一份|来了份|来了一杯|来了一碗|来了个|点了|整了|记录(?:一下)?|摄入了|摄入)\s*/i,
+  ];
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const pattern of replacements) {
+      const nextText = text.replace(pattern, '').trim();
+      if (nextText !== text) {
+        text = nextText;
+        changed = true;
+      }
+    }
+  }
+
+  return text.replace(/^(大概|大约|差不多|约)\s*/i, '').trim();
+}
+
+export function countQuantityPhrases(description: string): number {
+  return [...normalizeText(description).matchAll(QUANTITY_PATTERN)].length;
+}
+
+export function parseChineseNumber(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed === '半') {
+    return 0.5;
+  }
+
+  const numeric = Number.parseFloat(trimmed);
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+
+  const digitMap: Record<string, number> = {
+    零: 0,
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+  };
+
+  if (trimmed === '十') {
+    return 10;
+  }
+
+  if (trimmed.includes('十')) {
+    const [tens, ones] = trimmed.split('十');
+    const tensValue = tens ? digitMap[tens] ?? 0 : 1;
+    const onesValue = ones ? digitMap[ones] ?? 0 : 0;
+    return tensValue * 10 + onesValue;
+  }
+
+  if (trimmed.length === 1 && trimmed in digitMap) {
+    return digitMap[trimmed];
+  }
+
+  return null;
+}
+
+export function parseQuantity(quantityDescription: string) {
+  const match = quantityDescription.match(
+    /(\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)?/i
+  );
+
+  if (!match) {
+    return {count: 1, unit: null as string | null};
+  }
+
+  return {
+    count: parseChineseNumber(match[1] ?? '') ?? 1,
+    unit: match[2] ?? null,
+  };
+}
+
+export function sanitizeFoodName(foodName: string): string {
+  return foodName
+    .replace(/^[的了又还与及、，,\s]+/g, '')
+    .replace(/^(一份|一碗|一杯|一个|一只|一颗|一块|一片)\s*/i, '')
+    .replace(/\s+/g, '')
+    .replace(/左右$/i, '')
+    .trim();
+}
+
+export function extractSingleFoodCandidate(description: string): ExtractedFoodCandidate | null {
+  const stripped = stripContext(description);
+
+  if (!stripped || stripped.length > DIRECT_PARSE_MAX_LENGTH) {
+    return null;
+  }
+
+  if (MULTI_ITEM_SEPARATOR.test(normalizeItemSeparators(stripped)) || countQuantityPhrases(stripped) > 1) {
+    return null;
+  }
+
+  const prefixMatch = stripped.match(PREFIX_QUANTITY_PATTERN);
+  if (prefixMatch) {
+    return {
+      foodName: sanitizeFoodName(prefixMatch[2] ?? ''),
+      quantityDescription: prefixMatch[1]?.trim() ?? '未知',
+    };
+  }
+
+  const suffixMatch = stripped.match(SUFFIX_QUANTITY_PATTERN);
+  if (suffixMatch) {
+    return {
+      foodName: sanitizeFoodName(suffixMatch[1] ?? ''),
+      quantityDescription: suffixMatch[2]?.trim() ?? '未知',
+    };
+  }
+
+  return {
+    foodName: sanitizeFoodName(stripped.trim()),
+    quantityDescription: '未知',
+  };
+}
+
+export function splitFoodDescriptionSegments(description: string): string[] {
+  const stripped = stripContext(description);
+  if (!stripped) {
+    return [];
+  }
+
+  return normalizeItemSeparators(stripped)
+    .split('、')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+export function extractMultiFoodCandidates(
+  description: string
+): ExtractedFoodCandidate[] | null {
+  const stripped = normalizeItemSeparators(stripContext(description));
+
+  if (!stripped || stripped.length > DIRECT_PARSE_MAX_LENGTH) {
+    return null;
+  }
+
+  const segments = stripped
+    .split('、')
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  if (segments.length < 2 || countQuantityPhrases(stripped) < 2) {
+    return null;
+  }
+
+  const candidates = segments
+    .map((segment) => extractSingleFoodCandidate(segment))
+    .filter((candidate): candidate is ExtractedFoodCandidate => Boolean(candidate?.foodName));
+
+  return candidates.length >= 2 ? candidates : null;
+}

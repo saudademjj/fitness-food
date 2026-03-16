@@ -3,8 +3,8 @@ import type {Metadata} from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '宏量助手 - 智能饮食宏量记录',
-  description: 'AI 驱动的蛋白质与碳水化合物摄入计算器，助您轻松管理健康饮食。',
+  title: '营养助手 - 智能饮食记录',
+  description: 'AI 驱动的中文饮食记录工具，支持 23 项营养追踪与数据库优先营养计算。',
 };
 
 export default function RootLayout({

@@ -1,89 +1,120 @@
 
 'use server';
-/**
- * @fileOverview This file implements a Genkit flow for parsing natural language food descriptions with high precision.
- *
- * - parseFoodDescription - A function that parses a natural language description of food into a comprehensive 23-nutrient data structure.
- */
+import {
+  ParseFoodDescriptionInputSchema,
+  ParseFoodDescriptionOutputSchema,
+  type AiParsedFoodItem,
+  type ResolvedFoodItem,
+  type ParseFoodDescriptionInput,
+  type ParseFoodDescriptionOutput,
+} from '@/lib/food-contract';
+import {tryResolveDirectDescription} from '@/lib/direct-food-parser';
+import {scaleMacros} from '@/lib/macros';
+import {
+  lookupNutritionByNameExact,
+  lookupNutritionByNameFuzzy,
+  type NutritionLookupResult,
+} from '@/lib/nutrition-db';
+import {parseFoodCandidatesWithGemini} from '@/lib/gemini';
 
-import {ai} from '@/ai/genkit';
-import {z} from 'genkit';
+const COMPOSITE_FOOD_PATTERN =
+  /(炒饭|蛋炒饭|盖饭|拌饭|焖饭|烩饭|煲仔饭|焗饭|炒面|拌面|汤面|拉面|米线|河粉|炒粉|意面|三明治|汉堡|披萨|卷饼|卷|沙拉|套餐|便当|拼盘|汤|火锅|麻辣烫|冒菜|砂锅|小炒|炒菜|鸡丁|肉末|盖浇)/i;
+const UNSAFE_FUZZY_MATCH_PATTERN =
+  /(婴儿|婴幼儿|快餐|三明治|卷饼|汤|罐装|填料|调味|混合|饼干|松饼|百吉饼|潜艇|咖喱|餐厅|冷冻|晚餐|早餐|幼儿|泥|面包|汉堡)/i;
 
-const ParseFoodDescriptionInputSchema = z.object({
-  description: z
-    .string()
-    .describe('A natural language description of food consumed, e.g., "一块煎牛排和两棵西兰花".'),
-});
-export type ParseFoodDescriptionInput = z.infer<typeof ParseFoodDescriptionInputSchema>;
+function sanitizeFoodName(foodName: string): string {
+  return foodName
+    .normalize('NFKC')
+    .replace(/^[的了又还和与及、，,\s]+/g, '')
+    .replace(/[，,。.!！?？]+$/g, '')
+    .trim();
+}
 
-const ParseFoodDescriptionOutputSchema = z.array(
-  z.object({
-    foodName: z.string().describe('The name of the food item.'),
-    quantityDescription: z.string().describe('The quantity described, e.g., "150克".'),
-    estimatedGrams: z.number().describe('Estimated total weight in grams.'),
-    
-    // Macros
-    energyKcal: z.number().describe('Energy in kcal.'),
-    proteinGrams: z.number().describe('Protein in grams.'),
-    fatGrams: z.number().describe('Total fat in grams.'),
-    carbohydrateGrams: z.number().describe('Total carbohydrates in grams.'),
-    fiberGrams: z.number().describe('Dietary fiber in grams.'),
-    sugarsGrams: z.number().describe('Total sugars in grams.'),
-    
-    // Minerals
-    sodiumMg: z.number().describe('Sodium in mg.'),
-    potassiumMg: z.number().describe('Potassium in mg.'),
-    calciumMg: z.number().describe('Calcium in mg.'),
-    magnesiumMg: z.number().describe('Magnesium in mg.'),
-    ironMg: z.number().describe('Iron in mg.'),
-    zincMg: z.number().describe('Zinc in mg.'),
-    
-    // Vitamins
-    vitaminAMcg: z.number().describe('Vitamin A in mcg RAE.'),
-    vitaminCMg: z.number().describe('Vitamin C in mg.'),
-    vitaminDMcg: z.number().describe('Vitamin D in mcg.'),
-    vitaminEMg: z.number().describe('Vitamin E in mg.'),
-    vitaminKMcg: z.number().describe('Vitamin K in mcg.'),
-    thiaminMg: z.number().describe('Vitamin B1 (Thiamin) in mg.'),
-    riboflavinMg: z.number().describe('Vitamin B2 (Riboflavin) in mg.'),
-    niacinMg: z.number().describe('Vitamin B3 (Niacin) in mg.'),
-    vitaminB6Mg: z.number().describe('Vitamin B6 in mg.'),
-    vitaminB12Mcg: z.number().describe('Vitamin B12 in mcg.'),
-    folateMcg: z.number().describe('Folate in mcg DFE.'),
-  })
-);
-export type ParseFoodDescriptionOutput = z.infer<typeof ParseFoodDescriptionOutputSchema>;
+function sanitizeCandidate(candidate: AiParsedFoodItem): AiParsedFoodItem {
+  return {
+    ...candidate,
+    foodName: sanitizeFoodName(candidate.foodName),
+    quantityDescription: candidate.quantityDescription.trim() || '未知',
+  };
+}
+
+function isLikelyCompositeFood(foodName: string): boolean {
+  return COMPOSITE_FOOD_PATTERN.test(foodName);
+}
+
+function shouldAllowFuzzyMatch(foodName: string): boolean {
+  return !isLikelyCompositeFood(foodName);
+}
+
+function isSafeFuzzyMatch(foodName: string, matchedName: string): boolean {
+  const normalizedFoodName = sanitizeFoodName(foodName);
+  const normalizedMatchedName = sanitizeFoodName(matchedName);
+
+  if (!normalizedFoodName || !normalizedMatchedName) {
+    return false;
+  }
+
+  if (UNSAFE_FUZZY_MATCH_PATTERN.test(normalizedMatchedName)) {
+    return false;
+  }
+
+  return (
+    normalizedMatchedName === normalizedFoodName ||
+    normalizedMatchedName.startsWith(normalizedFoodName) ||
+    normalizedFoodName.startsWith(normalizedMatchedName)
+  );
+}
+
+function buildResolvedFood(
+  candidate: AiParsedFoodItem,
+  dbMatch: NutritionLookupResult | null,
+  overrides?: Partial<ResolvedFoodItem>
+): ResolvedFoodItem {
+  const per100g = dbMatch?.per100g ?? candidate.fallbackPer100g;
+  return {
+    foodName: overrides?.foodName ?? candidate.foodName,
+    quantityDescription: overrides?.quantityDescription ?? candidate.quantityDescription,
+    estimatedGrams: overrides?.estimatedGrams ?? candidate.estimatedGrams,
+    confidence: overrides?.confidence ?? candidate.confidence,
+    sourceKind: overrides?.sourceKind ?? dbMatch?.sourceKind ?? 'ai_fallback',
+    sourceLabel: overrides?.sourceLabel ?? dbMatch?.sourceLabel ?? 'AI 估算',
+    per100g,
+    totals:
+      overrides?.totals ??
+      scaleMacros(per100g, overrides?.estimatedGrams ?? candidate.estimatedGrams),
+  };
+}
+
+async function resolveCandidate(candidate: AiParsedFoodItem): Promise<ResolvedFoodItem[]> {
+  const normalizedCandidate = sanitizeCandidate(candidate);
+  const exactMatch = await lookupNutritionByNameExact(normalizedCandidate.foodName);
+  if (exactMatch) {
+    return [buildResolvedFood(normalizedCandidate, exactMatch)];
+  }
+
+  const fuzzyCandidate = shouldAllowFuzzyMatch(normalizedCandidate.foodName)
+    ? await lookupNutritionByNameFuzzy(normalizedCandidate.foodName)
+    : null;
+  const fuzzyMatch =
+    fuzzyCandidate &&
+    isSafeFuzzyMatch(normalizedCandidate.foodName, fuzzyCandidate.matchedName)
+      ? fuzzyCandidate
+      : null;
+
+  return [buildResolvedFood(normalizedCandidate, fuzzyMatch)];
+}
 
 export async function parseFoodDescription(
   input: ParseFoodDescriptionInput
 ): Promise<ParseFoodDescriptionOutput> {
-  return parseFoodDescriptionFlow(input);
-}
-
-const prompt = ai.definePrompt({
-  name: 'parseFoodDescriptionPrompt',
-  input: {schema: ParseFoodDescriptionInputSchema},
-  output: {schema: ParseFoodDescriptionOutputSchema},
-  prompt: `你是一位顶级临床营养师。你的任务是基于最新的公共食物营养数据库（如USDA或中国食物成分表）对用户提供的自然语言描述进行高精度的营养分析。
-
-分析规则：
-1. **精确估计**：根据描述中的食物量（如“一个中等大小的苹果”约182g，“一碗白米饭”约200g）计算所有23项指标。
-2. **全面覆盖**：必须提供所有宏量营养素、关键矿物质和全谱维生素（A, C, D, E, K, B族, 叶酸）。
-3. **数据可靠性**：如果描述不全，基于该食物的标准平均值进行科学估算。
-4. **单位严格**：能量单位为kcal，宏量为克(g)，微量为毫克(mg)或微克(mcg)，请严格遵守Schema定义的单位。
-
-用户输入: "{{{description}}}"
-输出要求：返回一个 JSON 数组，每个元素代表一个识别到的食物项。`,
-});
-
-const parseFoodDescriptionFlow = ai.defineFlow(
-  {
-    name: 'parseFoodDescriptionFlow',
-    inputSchema: ParseFoodDescriptionInputSchema,
-    outputSchema: ParseFoodDescriptionOutputSchema,
-  },
-  async input => {
-    const {output} = await prompt(input);
-    return output!;
+  const parsedInput = ParseFoodDescriptionInputSchema.parse(input);
+  const directlyResolvedFoods = await tryResolveDirectDescription(parsedInput.description);
+  if (directlyResolvedFoods?.length) {
+    return ParseFoodDescriptionOutputSchema.parse(directlyResolvedFoods);
   }
-);
+
+  const candidates = await parseFoodCandidatesWithGemini(parsedInput.description);
+  const resolvedFoods = (await Promise.all(candidates.map(resolveCandidate))).flat();
+
+  return ParseFoodDescriptionOutputSchema.parse(resolvedFoods);
+}

@@ -3,8 +3,7 @@
 import React from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Zap, Wheat, Beaker, Citrus, Dumbbell, Bone, Flame, Droplets, Leaf, Activity } from 'lucide-react';
+import { Zap, Wheat, Flame, Droplets } from 'lucide-react';
 import { type MacroGoals } from './types';
 
 interface DashboardSummaryProps {
@@ -14,34 +13,15 @@ interface DashboardSummaryProps {
 
 export function DashboardSummary({ totals, goals }: DashboardSummaryProps) {
   const getProgress = (current: number | undefined, goal: number) => {
-    if (!current || isNaN(current)) return 0;
+    if (!current || isNaN(current) || goal <= 0) return 0;
     return Math.min((current / goal) * 100, 100);
   };
 
-  const macroNutrients = [
+  const coreNutrients = [
     { label: '热量', key: 'energyKcal', goal: goals.energyKcal, unit: 'kcal', icon: <Flame className="h-4 w-4" />, color: 'bg-orange-500' },
     { label: '蛋白质', key: 'proteinGrams', goal: goals.proteinGrams, unit: 'g', icon: <Zap className="h-4 w-4" />, color: 'bg-primary' },
     { label: '碳水', key: 'carbohydrateGrams', goal: goals.carbohydrateGrams, unit: 'g', icon: <Wheat className="h-4 w-4" />, color: 'bg-accent' },
     { label: '脂肪', key: 'fatGrams', goal: goals.fatGrams, unit: 'g', icon: <Droplets className="h-4 w-4" />, color: 'bg-yellow-500' },
-    { label: '纤维', key: 'fiberGrams', goal: goals.fiberGrams, unit: 'g', icon: <Leaf className="h-4 w-4" />, color: 'bg-green-600' },
-  ];
-
-  const mineralNutrients = [
-    { label: '钙', key: 'calciumMg', goal: goals.calciumMg, unit: 'mg', icon: <Bone className="h-4 w-4" />, color: 'bg-emerald-500' },
-    { label: '镁', key: 'magnesiumMg', goal: goals.magnesiumMg, unit: 'mg', icon: <Beaker className="h-4 w-4" />, color: 'bg-blue-500' },
-    { label: '铁', key: 'ironMg', goal: goals.ironMg, unit: 'mg', icon: <Dumbbell className="h-4 w-4" />, color: 'bg-red-500' },
-    { label: '锌', key: 'zincMg', goal: goals.zincMg, unit: 'mg', icon: <Activity className="h-4 w-4" />, color: 'bg-purple-500' },
-    { label: '钾', key: 'potassiumMg', goal: goals.potassiumMg, unit: 'mg', icon: <Activity className="h-4 w-4" />, color: 'bg-cyan-500' },
-    { label: '钠', key: 'sodiumMg', goal: goals.sodiumMg, unit: 'mg', icon: <Activity className="h-4 w-4" />, color: 'bg-slate-400' },
-  ];
-
-  const vitaminNutrients = [
-    { label: '维A', key: 'vitaminAMcg', goal: goals.vitaminAMcg, unit: 'mcg', icon: <Citrus className="h-4 w-4" />, color: 'bg-amber-500' },
-    { label: '维C', key: 'vitaminCMg', goal: goals.vitaminCMg, unit: 'mg', icon: <Citrus className="h-4 w-4" />, color: 'bg-orange-400' },
-    { label: '维D', key: 'vitaminDMcg', goal: goals.vitaminDMcg, unit: 'mcg', icon: <Citrus className="h-4 w-4" />, color: 'bg-yellow-400' },
-    { label: '维E', key: 'vitaminEMg', goal: goals.vitaminEMg, unit: 'mg', icon: <Citrus className="h-4 w-4" />, color: 'bg-rose-400' },
-    { label: '维B12', key: 'vitaminB12Mcg', goal: goals.vitaminB12Mcg, unit: 'mcg', icon: <Citrus className="h-4 w-4" />, color: 'bg-pink-500' },
-    { label: '叶酸', key: 'folateMcg', goal: goals.folateMcg, unit: 'mcg', icon: <Leaf className="h-4 w-4" />, color: 'bg-lime-500' },
   ];
 
   const renderNutrientCard = (n: any) => {
@@ -71,28 +51,15 @@ export function DashboardSummary({ totals, goals }: DashboardSummaryProps) {
 
   return (
     <div className="mb-8">
-      <Tabs defaultValue="macros" className="w-full">
-        <TabsList className="grid w-full grid-cols-3 mb-4 bg-secondary/30 rounded-xl">
-          <TabsTrigger value="macros" className="text-xs">宏量/核心</TabsTrigger>
-          <TabsTrigger value="minerals" className="text-xs">矿物质</TabsTrigger>
-          <TabsTrigger value="vitamins" className="text-xs">维生素</TabsTrigger>
-        </TabsList>
-        <TabsContent value="macros">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            {macroNutrients.map(renderNutrientCard)}
-          </div>
-        </TabsContent>
-        <TabsContent value="minerals">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            {mineralNutrients.map(renderNutrientCard)}
-          </div>
-        </TabsContent>
-        <TabsContent value="vitamins">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            {vitaminNutrients.map(renderNutrientCard)}
-          </div>
-        </TabsContent>
-      </Tabs>
+      <div className="mb-3 flex items-end justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-primary">今日核心营养</p>
+          <p className="text-xs text-muted-foreground">数据库命中优先，查不到才回退到 AI 估算。</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {coreNutrients.map(renderNutrientCard)}
+      </div>
     </div>
   );
 }

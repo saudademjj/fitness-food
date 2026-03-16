@@ -1,7 +1,8 @@
 'use server';
 
 import {headers} from 'next/headers';
-import { parseFoodDescription, type ParseFoodDescriptionOutput } from '@/ai/flows/parse-food-description-flow';
+import {parseFoodDescription} from '@/ai/flows/parse-food-description-flow';
+import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
 import {consumeRateLimit} from '@/lib/rate-limit';
 
 const DESCRIPTION_MAX_LENGTH = 500;

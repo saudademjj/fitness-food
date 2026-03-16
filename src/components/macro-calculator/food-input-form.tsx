@@ -8,7 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Plus, Sparkles, Loader2 } from 'lucide-react';
 import { parseDescriptionAction } from '@/app/actions/food';
 import { useToast } from '@/hooks/use-toast';
-import { type ParseFoodDescriptionOutput } from '@/ai/flows/parse-food-description-flow';
+import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
 
 interface FoodInputFormProps {
   onFoodsParsed: (foods: ParseFoodDescriptionOutput) => void;
@@ -59,7 +59,7 @@ export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
           食物录入
         </CardTitle>
         <CardDescription>
-          用自然语言描述您吃了什么（例如：“一个苹果，150克鸡胸肉”）
+          用自然语言描述您吃了什么。系统会先尝试直接命中营养数据库，复杂描述再交给 Gemini 拆解和估算。
         </CardDescription>
       </CardHeader>
       <CardContent>

@@ -1,21 +1,23 @@
-
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { 
-  Dialog, 
-  DialogContent, 
-  DialogHeader, 
-  DialogTitle, 
+import React, {useEffect, useState} from 'react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
   DialogFooter,
-  DialogDescription 
+  DialogHeader,
+  DialogTitle,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { type ParseFoodDescriptionOutput } from '@/ai/flows/parse-food-description-flow';
-import { Scale, Zap, Wheat, Droplets, Flame, Activity } from 'lucide-react';
+import {Badge} from '@/components/ui/badge';
+import {Button} from '@/components/ui/button';
+import {Input} from '@/components/ui/input';
+import {Label} from '@/components/ui/label';
+import {ScrollArea} from '@/components/ui/scroll-area';
+import {Slider} from '@/components/ui/slider';
+import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
+import {updateFoodWeight} from './types';
+import {Droplets, Flame, Scale, Wheat, Zap} from 'lucide-react';
 
 interface ConfirmationDialogProps {
   isOpen: boolean;
@@ -24,11 +26,11 @@ interface ConfirmationDialogProps {
   onConfirm: (foods: ParseFoodDescriptionOutput) => void;
 }
 
-export function ConfirmationDialog({ 
-  isOpen, 
-  onClose, 
-  parsedFoods, 
-  onConfirm 
+export function ConfirmationDialog({
+  isOpen,
+  onClose,
+  parsedFoods,
+  onConfirm,
 }: ConfirmationDialogProps) {
   const [editedFoods, setEditedFoods] = useState<ParseFoodDescriptionOutput>([]);
 
@@ -36,82 +38,133 @@ export function ConfirmationDialog({
     setEditedFoods(parsedFoods);
   }, [parsedFoods]);
 
-  const handleUpdate = (index: number, field: string, value: string | number) => {
+  const handleWeightUpdate = (index: number, grams: number) => {
     const updated = [...editedFoods];
-    (updated[index] as any)[field] = value;
+    updated[index] = updateFoodWeight(updated[index], grams);
     setEditedFoods(updated);
   };
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-[700px] max-h-[90vh] p-0">
+      <DialogContent className="sm:max-w-[760px] max-h-[90vh] p-0">
         <DialogHeader className="p-6 pb-2">
-          <DialogTitle className="text-2xl font-headline font-bold text-primary">确认 23 项营养数据</DialogTitle>
+          <DialogTitle className="text-2xl font-headline font-bold text-primary">
+            确认食物与重量
+          </DialogTitle>
           <DialogDescription>
-            AI 专家已为您解析出完整的营养成分表。
+            先确认 AI 识别结果，再调节克重。四项营养会根据每100g数据实时重算。
           </DialogDescription>
         </DialogHeader>
-        
-        <ScrollArea className="h-[500px] px-6 py-4">
-          <div className="space-y-8">
+
+        <ScrollArea className="h-[520px] px-6 py-4">
+          <div className="space-y-6">
             {editedFoods.map((food, idx) => (
-              <div key={idx} className="p-4 bg-secondary/10 rounded-2xl border border-secondary/20 space-y-4">
-                <div className="grid grid-cols-2 gap-4">
+              <div
+                key={`${food.foodName}-${idx}`}
+                className="space-y-4 rounded-2xl border border-secondary/20 bg-secondary/10 p-4"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="space-y-2">
-                    <Label className="text-[10px] font-bold uppercase text-muted-foreground">食物名称</Label>
-                    <Input 
-                      value={food.foodName} 
-                      onChange={(e) => handleUpdate(idx, 'foodName', e.target.value)}
-                      className="bg-white"
-                    />
+                    <Label className="text-[10px] font-bold uppercase text-muted-foreground">
+                      食物名称
+                    </Label>
+                    <div className="text-lg font-bold text-primary">{food.foodName}</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary" className="rounded-full">
+                        {food.sourceLabel}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        置信度 {Math.round(food.confidence * 100)}%
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      原始描述：{food.quantityDescription || '未知分量'}
+                    </p>
                   </div>
-                  <div className="space-y-2">
-                    <Label className="text-[10px] font-bold uppercase text-muted-foreground">重量 (g)</Label>
-                    <Input 
-                      type="number" 
-                      value={food.estimatedGrams} 
-                      onChange={(e) => handleUpdate(idx, 'estimatedGrams', parseFloat(e.target.value) || 0)}
+
+                  <div className="min-w-[180px] space-y-2">
+                    <Label className="text-[10px] font-bold uppercase text-muted-foreground">
+                      当前重量 (g)
+                    </Label>
+                    <Input
+                      type="number"
+                      value={food.estimatedGrams}
+                      onChange={(e) => handleWeightUpdate(idx, parseFloat(e.target.value) || 0)}
                       className="bg-white"
                     />
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1">
+                      <Scale className="h-3 w-3" />
+                      调整克重
+                    </span>
+                    <span>{food.estimatedGrams}g</span>
+                  </div>
+                  <Slider
+                    min={0}
+                    max={Math.max(300, Math.ceil(food.estimatedGrams * 2))}
+                    step={5}
+                    value={[food.estimatedGrams]}
+                    onValueChange={([value]) => handleWeightUpdate(idx, value ?? 0)}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   {[
-                    { label: '热量', key: 'energyKcal', icon: <Flame className="h-3 w-3" /> },
-                    { label: '蛋白', key: 'proteinGrams', icon: <Zap className="h-3 w-3" /> },
-                    { label: '碳水', key: 'carbohydrateGrams', icon: <Wheat className="h-3 w-3" /> },
-                    { label: '脂肪', key: 'fatGrams', icon: <Droplets className="h-3 w-3" /> },
-                    { label: '纤维', key: 'fiberGrams', icon: <Activity className="h-3 w-3" /> },
-                    { label: '钙', key: 'calciumMg', icon: <Activity className="h-3 w-3" /> },
-                    { label: '铁', key: 'ironMg', icon: <Activity className="h-3 w-3" /> },
-                    { label: '锌', key: 'zincMg', icon: <Activity className="h-3 w-3" /> },
+                    {
+                      label: '热量',
+                      value: `${food.totals.energyKcal.toFixed(1)} kcal`,
+                      icon: <Flame className="h-3 w-3" />,
+                    },
+                    {
+                      label: '蛋白质',
+                      value: `${food.totals.proteinGrams.toFixed(1)} g`,
+                      icon: <Zap className="h-3 w-3" />,
+                    },
+                    {
+                      label: '碳水',
+                      value: `${food.totals.carbohydrateGrams.toFixed(1)} g`,
+                      icon: <Wheat className="h-3 w-3" />,
+                    },
+                    {
+                      label: '脂肪',
+                      value: `${food.totals.fatGrams.toFixed(1)} g`,
+                      icon: <Droplets className="h-3 w-3" />,
+                    },
                   ].map((field) => (
-                    <div key={field.key} className="space-y-1">
-                      <Label className="text-[9px] flex items-center gap-1 font-bold text-muted-foreground">
-                        {field.icon} {field.label}
+                    <div key={field.label} className="rounded-xl bg-white p-3 shadow-sm">
+                      <Label className="text-[10px] font-bold text-muted-foreground flex items-center gap-1">
+                        {field.icon}
+                        {field.label}
                       </Label>
-                      <Input 
-                        type="number" 
-                        step="0.1"
-                        value={(food as any)[field.key]} 
-                        onChange={(e) => handleUpdate(idx, field.key, parseFloat(e.target.value) || 0)}
-                        className="bg-white h-7 text-xs px-2"
-                      />
+                      <div className="mt-1 text-sm font-semibold text-primary">
+                        {field.value}
+                      </div>
                     </div>
                   ))}
                 </div>
-                <p className="text-[9px] text-muted-foreground italic">* 其他维生素等 15 项数据已在后台记录，如需全部修改请在详情页操作。</p>
+
+                <p className="text-[10px] text-muted-foreground italic">
+                  每100g基准：{food.per100g.energyKcal.toFixed(1)} kcal / 蛋白{' '}
+                  {food.per100g.proteinGrams.toFixed(1)}g / 碳水{' '}
+                  {food.per100g.carbohydrateGrams.toFixed(1)}g / 脂肪{' '}
+                  {food.per100g.fatGrams.toFixed(1)}g
+                </p>
               </div>
             ))}
           </div>
         </ScrollArea>
 
-        <DialogFooter className="p-6 pt-2 gap-2 sm:gap-0 border-t">
-          <Button variant="outline" onClick={onClose} className="rounded-full">取消</Button>
-          <Button 
+        <DialogFooter className="border-t p-6 pt-2 gap-2 sm:gap-0">
+          <Button variant="outline" onClick={onClose} className="rounded-full">
+            取消
+          </Button>
+          <Button
             onClick={() => onConfirm(editedFoods)}
-            className="bg-primary text-primary-foreground hover:bg-primary/90 rounded-full"
+            className="rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
           >
             确认并添加
           </Button>

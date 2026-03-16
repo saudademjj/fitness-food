@@ -3,7 +3,8 @@
 import React from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Trash2, Scale, Zap, Wheat, Beaker, Citrus, Bone, Activity } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Trash2, Scale, Zap, Wheat, Flame, Droplets } from 'lucide-react';
 import { type FoodLogEntry } from './types';
 
 interface FoodLogListProps {
@@ -16,7 +17,7 @@ export function FoodLogList({ entries, onDelete }: FoodLogListProps) {
     return (
       <div className="text-center py-12 px-4 bg-white/30 rounded-2xl border-2 border-dashed border-muted-foreground/20">
         <p className="text-muted-foreground">今天还没有记录任何食物</p>
-        <p className="text-xs text-muted-foreground/60 mt-1">开始输入您的饮食，让 AI 帮您计算全面营养素</p>
+        <p className="text-xs text-muted-foreground/60 mt-1">开始输入饮食描述，系统会优先命中营养数据库，复杂描述再交给 Gemini 处理。</p>
       </div>
     );
   }
@@ -35,7 +36,15 @@ export function FoodLogList({ entries, onDelete }: FoodLogListProps) {
             <div className="flex justify-between items-start gap-4">
               <div className="flex-1">
                 <h4 className="font-bold text-lg text-primary">{entry.foodName}</h4>
-                <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Badge variant="secondary" className="rounded-full">
+                    {entry.sourceLabel}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    置信度 {Math.round(entry.confidence * 100)}%
+                  </span>
+                </div>
+                <div className="flex items-center gap-3 mt-2 text-sm text-muted-foreground">
                   <span className="flex items-center gap-1">
                     <Scale className="h-3 w-3" />
                     {entry.quantityDescription || '未知分量'} ({entry.estimatedGrams || 0}g)
@@ -43,12 +52,10 @@ export function FoodLogList({ entries, onDelete }: FoodLogListProps) {
                 </div>
                 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 mt-4">
-                  <NutrientBadge label="蛋白质" value={entry.proteinGrams} unit="g" icon={<Zap className="h-3 w-3 fill-current" />} />
-                  <NutrientBadge label="碳水" value={entry.carbohydrateGrams} unit="g" icon={<Wheat className="h-3 w-3" />} />
-                  <NutrientBadge label="镁" value={entry.magnesiumMg} unit="mg" icon={<Beaker className="h-3 w-3" />} />
-                  <NutrientBadge label="维C" value={entry.vitaminCMg} unit="mg" icon={<Citrus className="h-3 w-3" />} />
-                  <NutrientBadge label="钙" value={entry.calciumMg} unit="mg" icon={<Bone className="h-3 w-3" />} />
-                  <NutrientBadge label="铁" value={entry.ironMg} unit="mg" icon={<Activity className="h-3 w-3" />} />
+                  <NutrientBadge label="热量" value={entry.totals.energyKcal} unit="kcal" icon={<Flame className="h-3 w-3" />} />
+                  <NutrientBadge label="蛋白质" value={entry.totals.proteinGrams} unit="g" icon={<Zap className="h-3 w-3 fill-current" />} />
+                  <NutrientBadge label="碳水" value={entry.totals.carbohydrateGrams} unit="g" icon={<Wheat className="h-3 w-3" />} />
+                  <NutrientBadge label="脂肪" value={entry.totals.fatGrams} unit="g" icon={<Droplets className="h-3 w-3" />} />
                 </div>
               </div>
               

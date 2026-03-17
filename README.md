@@ -1,50 +1,51 @@
-# Fitness-Food (饮食管理与 AI 营养分析系统)
+# Fitness-Food (饮食管理与 AI 营养分析系统 / Fitness-Food Diet Management & AI Nutrition System)
 
-[![Next.js](https://img.shields.io/badge/Next.js-15.5-black?logo=next.js)](https://nextjs.org/)
-[![React](https://img.shields.io/badge/React-19.0-61DAFB?logo=react)](https://react.dev/)
-[![Tailwind CSS](https://img.shields.io/badge/Tailwind--CSS-3.4-38B2AC?logo=tailwind-css)](https://tailwindcss.com/)
-[![AI](https://img.shields.io/badge/AI-Enabled-brightgreen)](https://openai.com/)
+本项目是一个现代化的全栈饮食追踪与营养分析应用。通过数据可视化展示摄入趋势，并利用 AI 模块提供初步的膳食建议，协助用户科学管理健康与健身目标。
 
-Fitness-Food 是一款用于个人饮食追踪与营养分析的 Web 应用。项目结合了基础的数据录入与可视化图表，并尝试引入 AI 模块以辅助用户进行营养摄入评估。
+This project is a modern full-stack diet tracking and nutrition analysis application. It features data visualization of intake trends and an AI module for dietary suggestions, helping users scientifically manage their health and fitness goals.
 
-## 主要功能
+## 核心特性 / Core Features
 
-- 饮食记录: 每日餐食的热量与营养素录入及持久化存储。
-- 数据可视化: 利用 Recharts 动态展示营养摄入趋势及体重变化。
-- AI 分析实验: 基于 LLM 对摄入内容进行分析并给出改进建议。
-- 目标设定: 支持设定每日宏量营养素目标，并实时对比当前进度。
+- 饮食追踪 (Dietary Tracking):
+    - 实现餐食热量与宏量营养素 (蛋白质、碳水、脂肪) 的分级录入。 / Multi-level logging for calories and macronutrients.
+    - 支持历史数据按天检索与对比。 / Daily historical data retrieval and comparison.
 
-## 技术栈
+- AI 营养助手 (AI Nutrition Assistant):
+    - 结合大语言模型对记录内容进行语义化分析。 / Semantic analysis of records using LLMs.
+    - 提供个性化的饮食配比优化建议。 / Personalized optimization suggestions for dietary balance.
 
-- 前端: Next.js 15, React 19, Recharts, Tailwind CSS
-- 后端与数据库: PostgreSQL (Node-postgres), AI 处理模块
-- 开发工具: Radix UI, zod (数据校验), date-fns
+- 数据可视化 (Data Visualization):
+    - 基于 Recharts 渲染营养素分布环形图与热量趋势折线图。 / Recharts-based nutrient distribution and calorie trend charts.
+    - 实时呈现目标达成百分比进度条。 / Real-time percentage progress bars for goal achievement.
 
-## 项目结构
+## 技术栈 / Technical Stack
+
+- 前端: Next.js 15 (App Router), React 19, Recharts, Tailwind CSS.
+- 后端: Node.js (Next.js API Routes), AI 分析引擎模块.
+- 存储: PostgreSQL (pg 驱动), 持久化用户摄入与个人配置数据.
+- 工具: Radix UI (无障碍组件), zod (运行时数据校验), date-fns (时间处理).
+
+## 项目结构 / Project Structure
 
 ```text
-.
-├── src
-│   ├── ai              # AI 分析模块
-│   ├── app             # Next.js 页面与路由
-│   ├── components      # UI 组件
-│   ├── hooks           # 自定义 Hook
-│   ├── lib             # 数据库引擎
-│   └── scripts         # 维护脚本
-├── db                  # SQL 初始化文件
-└── package.json
+fitness-food/
+├── src/
+│   ├── ai/             # AI 解析逻辑与提示词模板 / AI parsing logic and templates
+│   ├── app/            # Next.js 15 页面与 API 路由 / Next.js pages and API routes
+│   ├── components/     # UI 基础组件与统计看板组件 / UI and dashboard components
+│   ├── hooks/          # 数据流与状态持久化钩子 / Data flow and state hooks
+│   └── lib/            # 数据库访问客户端与通用工具 / DB client and utilities
+├── db/                 # SQL 初始化与播种脚本 / SQL initialization and seeding
+└── package.json        # 依赖与脚本定义 / Dependencies and scripts
 ```
 
-## 快速启动
+## 快速开始 / Quick Start
 
-### 1. 配置
-`npm install` 之后，在 `.env.local` 配置数据库连接：
-```env
-DATABASE_URL=postgresql://user:password@localhost:5432/fitness_food
+```bash
+npm install
+# 配置 .env.local (DATABASE_URL)
+npm run dev
 ```
 
-### 2. 运行
-`npm run dev`
-
-## 许可证
-MIT License
+## 许可证 / License
+本项目采用 [MIT License](LICENSE) 协议。 / This project is licensed under the MIT License.

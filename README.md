@@ -1,6 +1,7 @@
+[English](README_en.md) | 简体中文
+
 # Fitness Food
 
-[English](README_en.md) | 简体中文
 
 `Fitness Food` 是一个基于 `Next.js 15` 的中文饮食记录工具。当前版本保留现有前端页面，但把核心能力升级为“数据库优先、模型兜底”的营养计算流程：
 

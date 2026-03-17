@@ -1,8 +1,8 @@
 <div align="center">
-  <a href="./README.md">简体中文</a> | <a href="./README_en.md">English</a>
+  <a href="./README_en.md">English</a> | 简体中文
 </div>
 
-# Fitness-Food (饮食管理与 AI 营养分析系统 / Fitness-Food Diet Management & AI Nutrition System)
+# Fitness-Food (饮食管理与 AI 营养分析系统)
 
 ![Next.js](https://img.shields.io/badge/Next.js-15.5-000000?style=flat-square&logo=next.js)
 ![React](https://img.shields.io/badge/React-19.0-61DAFB?style=flat-square&logo=react)
@@ -10,60 +10,38 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql)
 ![AI](https://img.shields.io/badge/AI-Enabled-brightgreen?style=flat-square)
 
-本项目是一个现代化的全栈饮食追踪与营养分析应用。系统结合了直观的数据可视化图表与基于大语言模型（LLM）的语义分析逻辑，旨在协助用户通过数据化手段精确管理每日营养摄入，助力健身目标的达成。
+本项目是一款现代化的全栈饮食追踪与营养分析应用。系统结合了直观的数据可视化技术与大语言模型（LLM）的语义分析能力，旨在协助用户通过数据化手段精确管理每日营养摄入，科学达成增肌或减脂目标。
 
-This project is a modern full-stack diet tracking and nutrition analysis application. Combining intuitive data visualization with LLM-based semantic analysis, the system helps users precisely manage daily nutritional intake through data-driven methods to achieve fitness goals.
+## 核心工程点
 
-## 核心工程点 / Engineering Highlights
+### 1. 多维营养数据可视化
+集成 **Recharts** 驱动的动态统计模块：
+- **实时看板**: 动态渲染蛋白质、碳水化合物与脂肪的每日摄入比例环形图。
+- **趋势分析**: 呈现热量摄入与体重波动的关联性折线图，辅助用户进行阶段性复盘。
 
-### 1. 多维营养分析 (Multi-dimensional Nutrition Analysis)
-- **数据可视化**: 集成 Recharts 动态渲染环形营养素占比图与热量摄入趋势图。 / Dynamic Recharts for nutrient distribution and calorie trends.
-- **目标达成监控**: 实时对比每日设定的宏量营养素阈值（蛋白质、碳水、脂肪），并提供直观的进度预警。 / Real-time monitoring of daily macronutrient thresholds with progress alerts.
+### 2. AI 赋能的交互实验
+系统尝试引入 AI 模块以优化传统饮食记录的繁琐流程：
+- **非结构化录入**: 允许用户输入自然语言（如“中午吃了一个巨无霸和一小份薯条”），通过 AI 模块自动拆解营养成分。
+- **智能策略生成**: 根据用户的历史摄入数据与健身目标，动态提供膳食优化建议。
 
-### 2. AI 赋能实验 (AI-Powered Exploration)
-- **语义化解析**: 尝试利用 AI 模块对非结构化的饮食描述进行营养成分拆解，降低录入成本。 / Utilizing AI modules to decompose unstructured dietary descriptions into nutritional data.
-- **智能改进建议**: 基于用户的历史记录与目标（增肌/减脂），动态生成饮食优化策略。 / Dynamically generating diet optimization strategies based on history and goals.
+### 3. 类型安全的工程实践
+- **全链路校验**: 结合 Zod 与 React Hook Form，在客户端与 API 端点实现双重 Schema 校验，确保摄入数据的高准确性。
+- **持久层治理**: 基于 PostgreSQL 维护用户画像与食谱库，利用索引优化历史记录的分页查询。
 
-## 技术栈拆解 / Technical Stack Analysis
-
-| 层级 / Layer | 技术选型 / Technology | 核心用途 / Purpose |
-| :--- | :--- | :--- |
-| **应用框架** | Next.js 15 (App Router) | 利用 React 19 并发特性与 Server Components。 / RSC and concurrent features. |
-| **数据持久层** | PostgreSQL (Node-postgres) | 维护用户画像、食谱库与摄入流水。 / Profile, recipe library, and intake logs. |
-| **运行时校验** | Zod | 严格保证 API 端点入参的类型安全性。 / Strict type safety for API inputs. |
-| **可视化引擎** | Recharts | 渲染高性能的客户端交互图表。 / High-performance interactive charts. |
-
-## 项目目录结构 / Project Structure
+## 项目结构图
 
 ```text
 fitness-food/
 ├── src/
-│   ├── ai/             # AI 核心分析逻辑、提示词模板与解析中间件 / AI logic & prompt engineering
-│   ├── app/            # Next.js 15 页面容器、API 路由与全局布局 / Next.js pages & API routes
-│   ├── components/     # UI 原子组件、业务统计看板与表单模块 / Components & dashboards
-│   ├── hooks/          # 数据流管理与状态持久化自定义 Hook / Data flow & state hooks
-│   └── lib/            # 数据库连接池封装与共享底层工具类 / DB clients & core utilities
-├── db/                 # 物理存储初始化脚本与种子数据 / Database schemas & seed data
-├── deploy/             # 容器化部署与 CI/CD 相关配置 / Deployment & CI/CD configs
-└── package.json        # 依赖管理、构建脚本与项目元数据 / Dependencies & scripts
+│   ├── ai/             # AI 分析引擎核心逻辑与提示词模板
+│   ├── app/            # Next.js 15 App Router 页面与 API 端点
+│   ├── components/     # UI 原子组件、业务看板与交互图表
+│   ├── hooks/          # 数据流管理与状态持久化逻辑
+│   └── lib/            # 数据库连接池封装与底层工具函数库
+├── db/                 # SQL 初始化脚本与结构定义
+├── deploy/             # 环境编排相关配置文件
+└── package.json        # 依赖清单与项目生命周期定义
 ```
 
-## 快速运行 / Quick Start
-```bash
-# 安装项目依赖 / Install dependencies
-npm install
-
-# 配置环境变量 / Setup environment
-# 在 .env.local 中配置 DATABASE_URL=postgresql://...
-
-# 启动开发服务器 / Launch development server
-npm run dev
-```
-
-## 未来路线图 / Roadmap
-- [ ] 接入图像识别 API，实现通过拍照自动抓取食物营养成分。
-- [ ] 增加多用户饮食 PK 与社交激励排行榜功能。
-- [ ] 完善支持 PWA 离线存储，确保在无网环境下依然可以记录。
-
-## 许可证 / License
-本项目采用 MIT License 协议。 / Licensed under the MIT License.
+## 许可证
+本项目采用 MIT License 协议。

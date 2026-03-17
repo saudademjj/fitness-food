@@ -1,8 +1,16 @@
 <div align="center">
-  <a href="./README_en.md">English</a> | 简体中文
+  <p>AI-Powered Diet & Nutrition Analysis System / 饮食管理与 AI 营养分析系统</p>
+  <p>
+    <a href="#english">English</a> •
+    <a href="#简体中文">简体中文</a>
+  </p>
 </div>
 
-# Fitness-Food (饮食管理与 AI 营养分析系统)
+---
+
+<h2 id="english">🇬🇧 English</h2>
+
+# Fitness-Food
 
 ![Next.js](https://img.shields.io/badge/Next.js-15.5-000000?style=flat-square&logo=next.js)
 ![React](https://img.shields.io/badge/React-19.0-61DAFB?style=flat-square&logo=react)
@@ -10,25 +18,88 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql)
 ![AI](https://img.shields.io/badge/AI-Enabled-brightgreen?style=flat-square)
 
-本项目是一个集成 AI 智能语义分析与多维数据可视化的饮食管理系统。系统旨在通过技术手段简化每日营养追踪的繁琐流程，并基于大语言模型（LLM）提供精准的膳食反馈，助力用户科学达成健身与健康目标。
+**Fitness-Food** is an intelligent diet management system integrating AI-powered semantic analysis with multi-dimensional data visualization. Designed to simplify the tedious process of daily nutrition tracking, the system leverages Large Language Models (LLM) to provide precise dietary feedback, helping users scientifically achieve their fitness and health goals.
 
-## 🏛️ 系统工程与技术解析
+### 🏛️ System Architecture & Engineering
 
-### 1. 现代化全栈架构 (Modern Full-stack)
+#### 1. Modern Full-stack Architecture
+- **Next.js 15 (App Router)**: The core routing logic is built on Next.js 15. By deeply utilizing Server Components, complex database query logic is kept on the server, significantly reducing client-side JS execution overhead.
+- **React 19 Concurrent Mode**: Utilizing the latest features of React 19, the system maintains ultra-high interface responsiveness even during high-frequency interactions like chart rendering and form validation.
+
+#### 2. AI-Powered Ingestion Pipeline
+Traditional diet tracking requires manual ingredient searches, which is highly inefficient. This project introduces an **AI Semantic Parsing Module**:
+- **Logic Flow**: User inputs natural language -> Backend AI parser identifies ingredients and approximate portion sizes -> Estimates calories, protein, carbs, and fat based on a built-in nutrition database or LLM knowledge base.
+- **Prompt Engineering**: Within the `src/ai` directory, we have meticulously designed system prompts targeting macronutrient breakdown, ensuring standardized and highly accurate parsing results.
+
+#### 3. Data Visualization Engineering
+Integrates **Recharts** to build a real-time monitoring dashboard:
+- **Macronutrient Dashboard**: Provides real-time feedback on daily intake proportions via interactive Pie Charts, guiding users towards balanced nutrition.
+- **Dynamic Trend Analysis**: Utilizes smooth line charts to display the correlation trends between intake and weight, supporting dynamic time-span filtering.
+
+### 📂 Core Directory Structure
+
+```text
+fitness-food/
+├── src/
+│   ├── ai/             # AI parsing engine, prompt templates, and data standardizers
+│   ├── app/            # Next.js 15 pages, layouts, and typed API endpoints
+│   ├── components/     # UI atoms, dashboard modules, and Recharts wrappers
+│   ├── lib/            # Edge-optimized DB connection pools and utilities
+│   └── hooks/          # Data flow management, SWR sync, and state persistence
+├── db/                 # SQL init scripts, schemas, and test seed data
+├── deploy/             # Docker/Deployment orchestration configurations
+└── package.json        # Dependency management and lifecycle hooks
+```
+
+### 🚀 Quick Deployment
+
+1. **Environment Requirements**:
+   - Node.js >= 20
+   - PostgreSQL >= 16
+
+2. **Setup & Run**:
+   ```bash
+   # Install dependencies
+   npm install
+
+   # Configure your .env.local
+   # DATABASE_URL=postgresql://user:password@localhost:5432/fitness_food
+
+   # Initialize database schema
+   npm run db:setup
+
+   # Start high-performance dev server
+   npm run dev
+   ```
+
+### 📄 License
+This project is open-sourced under the MIT License.
+
+---
+
+<h2 id="简体中文">🇨🇳 简体中文</h2>
+
+# Fitness-Food
+
+**Fitness-Food** 是一个集成 AI 智能语义分析与多维数据可视化的饮食管理系统。系统旨在通过技术手段简化每日营养追踪的繁琐流程，并基于大语言模型（LLM）提供精准的膳食反馈，助力用户科学达成健身与健康目标。
+
+### 🏛️ 系统工程与技术解析
+
+#### 1. 现代化全栈架构 (Modern Full-stack)
 - **Next.js 15 (App Router)**: 系统核心路由逻辑基于 Next.js 15 构建。通过深度应用 Server Components，我们将复杂的数据库查询逻辑保留在服务端，显著降低了客户端的 JS 执行压力。
 - **React 19 Concurrent Mode**: 利用 React 19 的最新特性，系统在处理图表渲染与表单校验等高频交互时，能保持界面的极高响应速度。
 
-### 2. AI 驱动的录入管道 (AI-Powered Ingestion)
+#### 2. AI 驱动的录入管道 (AI-Powered Ingestion)
 传统的饮食记录系统需要手动检索食材，录入效率低下。本项目引入了 **AI 语义解析模块**：
 - **逻辑流**: 用户输入自然语言 -> 后端 AI 解析器识别食材与近似分量 -> 根据内置营养数据库或大模型知识库估算热量、蛋白质、碳水、脂肪。
 - **提示词工程**: 在 `src/ai` 目录下，我们精心设计了针对营养成分拆解的系统提示词，确保了解析结果的标准化与高准确度。
 
-### 3. 数据可视化工程 (Data Visualization)
+#### 3. 数据可视化工程 (Data Visualization)
 集成 **Recharts** 构建实时监控仪表盘：
 - **宏量元素看板**: 通过环形图（Pie Chart）实时反馈每日摄入占比，引导用户平衡营养结构。
 - **动态趋势分析**: 利用平滑折线图展示摄入量与体重的关联趋势，支持动态的时间跨度筛选。
 
-## 📂 核心目录解析
+### 📂 核心目录解析
 
 ```text
 fitness-food/
@@ -43,26 +114,26 @@ fitness-food/
 └── package.json        # 详尽的依赖管理与项目生命周期钩子
 ```
 
-## 🚀 开发者快速部署
+### 🚀 开发者快速部署
 
-### 1. 物理环境
-- Node.js >= 20
-- PostgreSQL >= 16
+1. **物理环境要求**:
+   - Node.js >= 20
+   - PostgreSQL >= 16
 
-### 2. 部署流程
-```bash
-# 安装依赖
-npm install
+2. **部署流程**:
+   ```bash
+   # 安装依赖
+   npm install
 
-# 配置 .env.local
-# DATABASE_URL=postgresql://user:password@localhost:5432/fitness_food
+   # 配置 .env.local
+   # DATABASE_URL=postgresql://user:password@localhost:5432/fitness_food
 
-# 数据库模式初始化
-npm run db:setup
+   # 数据库模式初始化
+   npm run db:setup
 
-# 启动高性能开发环境
-npm run dev
-```
+   # 启动高性能开发环境
+   npm run dev
+   ```
 
-## 许可证
+### 📄 许可证
 本项目遵循 MIT License 协议。

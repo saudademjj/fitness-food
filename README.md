@@ -1,6 +1,6 @@
 # Fitness Food
 
-<p align="right">中文 | <a href="https://github.com/saudademjj/fitness-food/tree/codex/readme-en">English</a></p>
+<p align="right">中文 | <a href="https://github.com/saudademjj/fitness-food/tree/en/readme">English</a></p>
 
 `Fitness Food` 是一个基于 `Next.js 15` 的中文饮食记录工具。当前版本保留现有前端页面，但把核心能力升级为“数据库优先、模型兜底”的营养计算流程：
 

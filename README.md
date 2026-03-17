@@ -1,10 +1,8 @@
+<a id="readme-top"></a>
+
 # Fitness Food
 
-**Language:** [Chinese](#chinese-version) | [English](#english-version)
-
-## Chinese Version
-
-**Language:** Chinese | [English](#english-version)
+<p align="right">中文 | <a href="#english-version">English</a></p>
 
 `Fitness Food` 是一个基于 `Next.js 15` 的中文饮食记录工具。当前版本保留现有前端页面，但把核心能力升级为“数据库优先、模型兜底”的营养计算流程：
 
@@ -126,7 +124,7 @@ npm run dev
 
 ## English Version
 
-**Language:** [Chinese](#chinese-version) | English
+<p align="right"><a href="#readme-top">中文</a> | English</p>
 
 `Fitness Food` is a Chinese nutrition logging app built with `Next.js 15`. The current version uses a database-first nutrition pipeline: simple food phrases are resolved directly from PostgreSQL whenever possible, while `Gemini 3 Flash Preview` is only used for complex descriptions, default portion estimation, and controlled fallback nutrition estimates.
 

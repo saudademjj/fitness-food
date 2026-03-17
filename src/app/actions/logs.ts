@@ -3,7 +3,15 @@
 import type {FoodLogEntry} from '@/components/macro-calculator/types';
 import {parseFoodDescription} from '@/ai/flows/parse-food-description-flow';
 import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
-import {scaleNutritionProfile} from '@/lib/nutrition-profile';
+import {COMPOSITE_FOOD_PATTERN, sanitizeFoodName} from '@/lib/food-text';
+import {
+  createNutritionLookupResolver,
+  type NutritionLookupResolver,
+  type NutritionLookupResult,
+} from '@/lib/nutrition-db';
+import {applyPreparationNutritionAdjustments} from '@/lib/portion-reference';
+import {cloneNutritionProfileMeta, scaleNutritionProfile} from '@/lib/nutrition-profile';
+import {dedupeValidationFlags} from '@/lib/validation';
 import {
   createFoodLog,
   deleteFoodLogItem,
@@ -21,10 +29,12 @@ export async function listFoodLogEntriesAction(date?: string): Promise<FoodLogEn
 
 export async function saveParsedFoodsAction(
   foods: ParseFoodDescriptionOutput,
-  sourceDescription?: string | null
+  sourceDescription?: string | null,
+  eatenAt?: number,
+  eatenOn?: string
 ): Promise<FoodLogEntry[]> {
   const viewer = await requireViewer();
-  return createFoodLog(viewer.id, foods, sourceDescription);
+  return createFoodLog(viewer.id, foods, sourceDescription, eatenAt, eatenOn);
 }
 
 function applyEditedWeight(
@@ -35,26 +45,187 @@ function applyEditedWeight(
     ...food,
     estimatedGrams: targetGrams,
     totals: scaleNutritionProfile(food.per100g, targetGrams),
+    totalsMeta: cloneNutritionProfileMeta(food.per100gMeta),
+  };
+}
+
+const RETAINED_EDIT_VALIDATION_FLAGS = [
+  'portion_reference_applied',
+  'portion_keyword_applied',
+  'portion_fallback_applied',
+  'portion_size_adjusted',
+  'portion_preparation_adjusted',
+] as const;
+
+function retainEditValidationFlags(
+  flags: ParseFoodDescriptionOutput[number]['validationFlags']
+): ParseFoodDescriptionOutput[number]['validationFlags'] {
+  return flags.filter((flag) =>
+    RETAINED_EDIT_VALIDATION_FLAGS.includes(
+      flag as (typeof RETAINED_EDIT_VALIDATION_FLAGS)[number]
+    )
+  );
+}
+
+function buildResolvedEditedFood(
+  food: ParseFoodDescriptionOutput[number],
+  dbMatch: NutritionLookupResult
+): ParseFoodDescriptionOutput[number] {
+  const adjusted = applyPreparationNutritionAdjustments(
+    dbMatch.per100g,
+    dbMatch.per100gMeta,
+    food.foodName,
+    dbMatch.matchedName
+  );
+  const confidence = dbMatch.matchMode === 'exact' ? 0.92 : 0.82;
+
+  return {
+    ...food,
+    confidence,
+    sourceKind: dbMatch.sourceKind,
+    sourceLabel: dbMatch.sourceLabel,
+    matchMode: dbMatch.matchMode,
+    sourceStatus: dbMatch.sourceStatus,
+    amountBasisG: dbMatch.amountBasisG,
+    validationFlags: dedupeValidationFlags([
+      ...dbMatch.validationFlags,
+      ...retainEditValidationFlags(food.validationFlags),
+      ...(confidence < 0.65 ? (['low_confidence'] as const) : []),
+    ]),
+    per100g: adjusted.profile,
+    per100gMeta: adjusted.meta,
+    totals: scaleNutritionProfile(adjusted.profile, food.estimatedGrams),
+    totalsMeta: cloneNutritionProfileMeta(adjusted.meta),
+  };
+}
+
+function pickEditedFallbackCandidate(
+  foodName: string,
+  parsed: ParseFoodDescriptionOutput
+): ParseFoodDescriptionOutput[number] | null {
+  if (!parsed.length) {
+    return null;
+  }
+
+  return (
+    parsed.find((candidate) => candidate.foodName === foodName) ??
+    parsed.find(
+      (candidate) =>
+        candidate.foodName.includes(foodName) || foodName.includes(candidate.foodName)
+    ) ??
+    parsed[0] ??
+    null
+  );
+}
+
+async function resolveEditedFood(
+  food: ParseFoodDescriptionOutput[number],
+  lookupResolver: NutritionLookupResolver
+): Promise<ParseFoodDescriptionOutput[number]> {
+  const sanitizedName = sanitizeFoodName(food.foodName);
+  if (!sanitizedName) {
+    return food;
+  }
+
+  const normalizedFood = {
+    ...food,
+    foodName: sanitizedName,
+  };
+  const dbMatch = await lookupResolver(sanitizedName, {
+    allowFuzzy: !COMPOSITE_FOOD_PATTERN.test(sanitizedName),
+    recordMiss: true,
+  });
+  if (dbMatch) {
+    return buildResolvedEditedFood(normalizedFood, dbMatch);
+  }
+
+  const reparsedFoods = await parseFoodDescription({description: sanitizedName});
+  const reparsedFood = pickEditedFallbackCandidate(sanitizedName, reparsedFoods);
+  if (!reparsedFood) {
+    return {
+      ...normalizedFood,
+      validationFlags: dedupeValidationFlags([
+        ...retainEditValidationFlags(food.validationFlags),
+        'db_lookup_miss',
+        'low_confidence',
+      ]),
+    };
+  }
+
+  return {
+    ...applyEditedWeight(reparsedFood, food.estimatedGrams),
+    foodName: sanitizedName,
+    quantityDescription: food.quantityDescription,
+    validationFlags: dedupeValidationFlags([
+      ...reparsedFood.validationFlags,
+      ...retainEditValidationFlags(food.validationFlags),
+    ]),
+  };
+}
+
+function buildMigrationRefreshDescription(entry: FoodLogEntry): string {
+  return entry.quantityDescription && entry.quantityDescription !== '未知'
+    ? `${entry.quantityDescription}${entry.foodName}`
+    : entry.foodName;
+}
+
+function pickMigrationCandidate(
+  entry: FoodLogEntry,
+  parsed: ParseFoodDescriptionOutput
+): ParseFoodDescriptionOutput[number] | null {
+  if (!parsed.length) {
+    return null;
+  }
+
+  return (
+    parsed.find((food) => food.foodName === entry.foodName) ??
+    parsed.find(
+      (food) =>
+        food.foodName.includes(entry.foodName) || entry.foodName.includes(food.foodName)
+    ) ??
+    parsed[0] ??
+    null
+  );
+}
+
+async function refreshEntryForMigration(
+  entry: FoodLogEntry
+): Promise<FoodLogEntry> {
+  const descriptionsToTry = [buildMigrationRefreshDescription(entry), entry.foodName].filter(
+    Boolean
+  );
+
+  try {
+    for (const description of descriptionsToTry) {
+      const parsed = await parseFoodDescription({description});
+      const refreshed = pickMigrationCandidate(entry, parsed);
+      if (!refreshed) {
+        continue;
+      }
+
+      return {
+        ...entry,
+        ...applyEditedWeight(refreshed, entry.estimatedGrams),
+        validationFlags: dedupeValidationFlags(refreshed.validationFlags),
+      };
+    }
+  } catch {}
+
+  return {
+    ...entry,
+    validationFlags: dedupeValidationFlags([
+      ...entry.validationFlags,
+      'ai_macro_unverified',
+      'low_confidence',
+    ]),
   };
 }
 
 export async function resolveEditedFoodsAction(
   foods: ParseFoodDescriptionOutput
 ): Promise<ParseFoodDescriptionOutput> {
-  const rebuiltFoods: ParseFoodDescriptionOutput = [];
-
-  for (const food of foods) {
-    const parsed = await parseFoodDescription({description: food.foodName});
-    const resolved = parsed[0];
-    if (!resolved) {
-      rebuiltFoods.push(food);
-      continue;
-    }
-
-    rebuiltFoods.push(applyEditedWeight(resolved, food.estimatedGrams));
-  }
-
-  return rebuiltFoods;
+  const lookupResolver = createNutritionLookupResolver();
+  return Promise.all(foods.map((food) => resolveEditedFood(food, lookupResolver)));
 }
 
 export async function updateFoodLogItemAction(
@@ -80,20 +251,7 @@ export async function exportFoodLogsAction(
 
 export async function migrateLocalEntriesAction(entries: FoodLogEntry[]): Promise<number> {
   const viewer = await requireViewer();
-  const refreshedEntries = await Promise.all(
-    entries.map(async (entry) => {
-      const refreshed = await parseFoodDescription({description: entry.foodName});
-      const latest = refreshed[0];
-      if (!latest) {
-        return entry;
-      }
-
-      return {
-        ...entry,
-        ...applyEditedWeight(latest, entry.estimatedGrams),
-      };
-    })
-  );
+  const refreshedEntries = await Promise.all(entries.map((entry) => refreshEntryForMigration(entry)));
 
   return migrateLocalDraftEntries(viewer.id, refreshedEntries);
 }

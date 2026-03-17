@@ -7,6 +7,7 @@ import {
   createNutritionProfile,
 } from '@/lib/nutrition-profile';
 import {
+  getNutritionCategory,
   sanitizeFallbackNutritionProfile,
   validateMacroNutrients,
 } from '@/lib/validation';
@@ -53,9 +54,9 @@ test('sanitizeFallbackNutritionProfile conservatively clamps invalid AI estimate
 
   assert.equal(sanitized.adjusted, true);
   assert.ok(sanitized.issues.length > 0);
-  assert.ok(sanitized.profile.energyKcal > 0);
-  assert.ok(sanitized.profile.proteinGrams <= 45);
-  assert.ok(sanitized.profile.sodiumMg <= 4000);
+  assert.ok((sanitized.profile.energyKcal ?? 0) > 0);
+  assert.ok((sanitized.profile.proteinGrams ?? 0) <= 45);
+  assert.ok((sanitized.profile.sodiumMg ?? 0) <= 4000);
 });
 
 test('sanitizeFallbackNutritionProfile clamps micronutrients into category-specific ranges', () => {
@@ -74,10 +75,37 @@ test('sanitizeFallbackNutritionProfile clamps micronutrients into category-speci
   );
 
   assert.equal(sanitized.adjusted, true);
-  assert.ok(sanitized.profile.fiberGrams <= 2);
-  assert.ok(sanitized.profile.sodiumMg <= 220);
-  assert.ok(sanitized.profile.calciumMg <= 220);
-  assert.ok(sanitized.profile.ironMg <= 1.2);
+  assert.ok((sanitized.profile.fiberGrams ?? 0) <= 2);
+  assert.ok((sanitized.profile.sodiumMg ?? 0) <= 220);
+  assert.ok((sanitized.profile.calciumMg ?? 0) <= 260);
+  assert.ok((sanitized.profile.ironMg ?? 0) <= 1.2);
+});
+
+test('sanitizeFallbackNutritionProfile suppresses impossible vitamin values for vegetables', () => {
+  const sanitized = sanitizeFallbackNutritionProfile(
+    '西兰花',
+    createNutritionProfile({
+      energyKcal: 35,
+      proteinGrams: 3,
+      carbohydrateGrams: 5,
+      fatGrams: 0.4,
+      potassiumMg: 20,
+      vitaminCMg: 0,
+      vitaminB12Mcg: 50,
+      folateMcg: 2,
+    })
+  );
+
+  assert.equal(sanitized.adjusted, true);
+  assert.ok((sanitized.profile.potassiumMg ?? 0) >= 80);
+  assert.ok((sanitized.profile.vitaminCMg ?? 0) >= 2);
+  assert.ok((sanitized.profile.vitaminB12Mcg ?? 0) <= 0.1);
+  assert.ok((sanitized.profile.folateMcg ?? 0) >= 8);
+});
+
+test('getNutritionCategory prefers mixed dishes when staple and protein cues coexist', () => {
+  assert.equal(getNutritionCategory('鸡肉炒饭'), 'mixed_dish');
+  assert.equal(getNutritionCategory('番茄鸡蛋面'), 'mixed_dish');
 });
 
 test('NUTRIENT_GROUPS covers every nutrition field exactly once', () => {

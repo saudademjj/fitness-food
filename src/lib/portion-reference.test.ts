@@ -3,7 +3,7 @@ import test from 'node:test';
 import {config} from 'dotenv';
 
 import {getDbPool} from '@/lib/db';
-import {createNutritionProfile} from '@/lib/nutrition-profile';
+import {buildNutritionProfileMeta, createNutritionProfile} from '@/lib/nutrition-profile';
 import {
   applyPreparationNutritionAdjustments,
   estimateGrams,
@@ -28,12 +28,16 @@ test('applyPreparationNutritionAdjustments raises fat for fried foods matched to
     fatGrams: 7,
     sodiumMg: 90,
   });
+  const baseMeta = buildNutritionProfileMeta(base, {
+    knownStatus: 'measured',
+    knownSource: 'database',
+  });
 
-  const adjusted = applyPreparationNutritionAdjustments(base, '炸鸡翅', '鸡翅');
+  const adjusted = applyPreparationNutritionAdjustments(base, baseMeta, '炸鸡翅', '鸡翅');
 
-  assert.ok(adjusted.fatGrams > base.fatGrams);
-  assert.ok(adjusted.energyKcal > base.energyKcal);
-  assert.ok(adjusted.sodiumMg >= base.sodiumMg);
+  assert.ok((adjusted.profile.fatGrams ?? 0) > (base.fatGrams ?? 0));
+  assert.ok((adjusted.profile.energyKcal ?? 0) > (base.energyKcal ?? 0));
+  assert.ok((adjusted.profile.sodiumMg ?? 0) >= (base.sodiumMg ?? 0));
 });
 
 databaseTest('estimateGrams uses seeded portion references for common foods', async () => {
@@ -66,4 +70,11 @@ databaseTest('estimateGrams applies size and preparation multipliers', async () 
 
   const friedWing = await estimateGrams('炸鸡翅', '一个');
   assert.ok(friedWing.validationFlags.includes('portion_preparation_adjusted'));
+});
+
+databaseTest('estimateGrams uses generic heuristic fallback for unseen foods', async () => {
+  const result = await estimateGrams('神秘气泡饮料', '一杯');
+  assert.equal(result.grams, 330);
+  assert.ok(result.validationFlags.includes('portion_fallback_applied'));
+  assert.equal(result.portion?.sourceLabel, '应用内通用回退估算');
 });

@@ -8,7 +8,8 @@
     "start": "next start",
     "test": "tsx --test src/**/*.test.ts",
     "lint": "next lint",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "report:runtime-db": "tsx scripts/report-runtime-db-health.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^4.1.3",

@@ -30,8 +30,8 @@ function registerTestPoolCleanup(): void {
 
 function createPool(): Pool {
   const poolConfig = {
-    max: process.env.PGPOOL_MAX ? Number.parseInt(process.env.PGPOOL_MAX, 10) : 20,
-    min: process.env.PGPOOL_MIN ? Number.parseInt(process.env.PGPOOL_MIN, 10) : 2,
+    max: process.env.PGPOOL_MAX ? Number.parseInt(process.env.PGPOOL_MAX, 10) : 40,
+    min: process.env.PGPOOL_MIN ? Number.parseInt(process.env.PGPOOL_MIN, 10) : 4,
     idleTimeoutMillis: process.env.PG_IDLE_TIMEOUT_MS
       ? Number.parseInt(process.env.PG_IDLE_TIMEOUT_MS, 10)
       : 30_000,

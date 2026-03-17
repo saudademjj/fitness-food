@@ -1,4 +1,4 @@
-export const DIRECT_PARSE_MAX_LENGTH = 28;
+export const DIRECT_PARSE_MAX_LENGTH = 64;
 export const MULTI_ITEM_SEPARATOR = /[，,、；;\/]/;
 export const COMPOSITE_FOOD_PATTERN =
   /(炒饭|蛋炒饭|盖饭|拌饭|焖饭|烩饭|煲仔饭|焗饭|炒面|拌面|汤面|拉面|米线|河粉|炒粉|意面|三明治|汉堡|披萨|卷饼|卷|沙拉|套餐|便当|拼盘|汤|火锅|麻辣烫|冒菜|砂锅|小炒|炒菜|鸡丁|肉末|盖浇)/i;
@@ -16,6 +16,40 @@ const SUFFIX_QUANTITY_PATTERN =
 const CONNECTOR_PATTERN = /(和|以及|还有|外加|配上|搭配|配|跟)/g;
 const CONNECTOR_RIGHT_QUANTITY_PATTERN =
   /^\s*(?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)/i;
+const ANY_QUANTITY_PATTERN =
+  /(?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)/i;
+
+function shouldSplitConnector(
+  connector: string,
+  leftContext: string,
+  rightContext: string
+): boolean {
+  const normalizedLeft = leftContext.trim();
+  const normalizedRight = rightContext.trim();
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+
+  if (CONNECTOR_RIGHT_QUANTITY_PATTERN.test(normalizedRight)) {
+    return true;
+  }
+
+  if (/(以及|还有|外加|配上|搭配|配)/.test(connector)) {
+    return ANY_QUANTITY_PATTERN.test(normalizedRight);
+  }
+
+  if (
+    /(和|跟)/.test(connector) &&
+    !COMPOSITE_FOOD_PATTERN.test(normalizedLeft) &&
+    !COMPOSITE_FOOD_PATTERN.test(normalizedRight) &&
+    normalizedLeft.length <= 8 &&
+    normalizedRight.length <= 8
+  ) {
+    return true;
+  }
+
+  return false;
+}
 
 export type ExtractedFoodCandidate = {
   foodName: string;
@@ -35,10 +69,14 @@ export function normalizeLookupText(value: string): string {
 }
 
 export function normalizeItemSeparators(value: string): string {
-  const normalized = normalizeText(value).replace(CONNECTOR_PATTERN, (connector, _group, offset, source) => {
-    const rightContext = source.slice(offset + connector.length);
-    return CONNECTOR_RIGHT_QUANTITY_PATTERN.test(rightContext) ? '、' : connector;
-  });
+  const normalized = normalizeText(value).replace(
+    CONNECTOR_PATTERN,
+    (connector, _group, offset, source) => {
+      const leftContext = source.slice(0, offset);
+      const rightContext = source.slice(offset + connector.length);
+      return shouldSplitConnector(connector, leftContext, rightContext) ? '、' : connector;
+    }
+  );
 
   return normalized
     .replace(/[，,；;\/]+/g, '、')
@@ -50,9 +88,9 @@ export function normalizeItemSeparators(value: string): string {
 export function stripContext(description: string): string {
   let text = normalizeText(description);
   const replacements = [
-    /^(今天早上|今天中午|今天晚上|今天早餐|今天午餐|今天晚餐|今早|昨晚|昨天早上|昨天中午|昨天晚上|早上|中午|晚上|早餐|午餐|晚餐|夜宵|宵夜|今天|昨天)\s*/i,
-    /^(我今天|我刚刚|我刚才|我)\s*/i,
-    /^(吃了|喝了|吃|喝|来了一份|来了份|来了一杯|来了一碗|来了个|点了|整了|记录(?:一下)?|摄入了|摄入)\s*/i,
+    /^(今天早上|今天上午|今天中午|今天下午|今天晚上|今天早餐|今天午餐|今天晚餐|今早|今晚|昨晚|昨天早上|昨天中午|昨天晚上|前天|上周|去年|早上|中午|晚上|早餐|午餐|晚餐|夜宵|宵夜|今天|昨天)\s*/i,
+    /^(我今天|我刚刚|我刚才|我刚|我)\s*/i,
+    /^(吃了|喝了|吃|喝|来了一份|来了份|来了一杯|来了一碗|来了个|点了|整了|记录(?:一下)?|摄入了|摄入|大概吃了|大约吃了|估摸着吃了|估计吃了)\s*/i,
   ];
 
   let changed = true;
@@ -67,7 +105,13 @@ export function stripContext(description: string): string {
     }
   }
 
-  return text.replace(/^(大概|大约|差不多|约)\s*/i, '').trim();
+  return text
+    .replace(/^(大概|大约|差不多|约|估摸着|估计|差不多有|大概有|大约有)\s*/i, '')
+    .replace(/(大概|大约|差不多|约|估摸着|估计)/gi, '')
+    .replace(/左右的?/gi, '')
+    .replace(/多(?:一点|一些)?$/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function countQuantityPhrases(description: string): number {
@@ -178,6 +222,45 @@ export function extractSingleFoodCandidate(description: string): ExtractedFoodCa
   };
 }
 
+export function extractWholeDishCandidate(
+  description: string
+): ExtractedFoodCandidate | null {
+  const stripped = stripContext(description);
+  if (!stripped) {
+    return null;
+  }
+
+  const prefixMatch = stripped.match(PREFIX_QUANTITY_PATTERN);
+  if (prefixMatch) {
+    const foodName = sanitizeFoodName(prefixMatch[2] ?? '');
+    return COMPOSITE_FOOD_PATTERN.test(foodName)
+      ? {
+          foodName,
+          quantityDescription: prefixMatch[1]?.trim() ?? '未知',
+        }
+      : null;
+  }
+
+  const suffixMatch = stripped.match(SUFFIX_QUANTITY_PATTERN);
+  if (suffixMatch) {
+    const foodName = sanitizeFoodName(suffixMatch[1] ?? '');
+    return COMPOSITE_FOOD_PATTERN.test(foodName)
+      ? {
+          foodName,
+          quantityDescription: suffixMatch[2]?.trim() ?? '未知',
+        }
+      : null;
+  }
+
+  const foodName = sanitizeFoodName(stripped.trim());
+  return COMPOSITE_FOOD_PATTERN.test(foodName)
+    ? {
+        foodName,
+        quantityDescription: '未知',
+      }
+    : null;
+}
+
 export function splitFoodDescriptionSegments(description: string): string[] {
   const stripped = stripContext(description);
   if (!stripped) {
@@ -204,7 +287,7 @@ export function extractMultiFoodCandidates(
     .map((segment) => segment.trim())
     .filter(Boolean);
 
-  if (segments.length < 2 || countQuantityPhrases(stripped) < 2) {
+  if (segments.length < 2) {
     return null;
   }
 

@@ -1,13 +1,12 @@
 'use client';
 
 import React, {useEffect, useState} from 'react';
-import {format} from 'date-fns';
 import {DashboardSummary} from '@/components/macro-calculator/dashboard-summary';
 import {FoodInputForm} from '@/components/macro-calculator/food-input-form';
 import {FoodLogList} from '@/components/macro-calculator/food-log-list';
 import {ConfirmationDialog} from '@/components/macro-calculator/confirmation-dialog';
 import {
-  GOAL_FIELDS,
+  GOAL_FIELD_GROUPS,
   coerceFoodLogEntryArray,
   coerceMacroGoals,
   createEntryId,
@@ -46,8 +45,13 @@ import {
   saveParsedFoodsAction,
   updateFoodLogItemAction,
 } from '@/app/actions/logs';
+import {
+  buildTimestampForDateKey,
+  formatLocalDateKey,
+  getDateKeyFromTimestamp,
+} from '@/lib/log-date';
 
-const TODAY = format(new Date(), 'yyyy-MM-dd');
+const TODAY = formatLocalDateKey(new Date());
 
 type ViewerState = {
   id: string;
@@ -67,10 +71,17 @@ export default function MacroHelperPage() {
   const [loginEmail, setLoginEmail] = useState('');
   const [selectedDate, setSelectedDate] = useState(TODAY);
   const [isLoadingEntries, setIsLoadingEntries] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
   const [editingEntry, setEditingEntry] = useState<FoodLogEntry | null>(null);
   const {toast} = useToast();
+  const getEntryDateKey = (entry: Pick<FoodLogEntry, 'loggedOn' | 'timestamp'>) =>
+    entry.loggedOn ?? getDateKeyFromTimestamp(entry.timestamp);
 
-  const displayEntries = viewer ? serverEntries : localEntries;
+  const displayEntries = viewer
+    ? serverEntries
+    : localEntries.filter(
+        (entry) => getEntryDateKey(entry) === selectedDate
+      );
   const totals = sumEntryTotals(displayEntries);
 
   useEffect(() => {
@@ -211,9 +222,18 @@ export default function MacroHelperPage() {
     setIsConfirmOpen(true);
   };
 
-  const handleConfirmFoods = async (foods: ParseFoodDescriptionOutput) => {
+  const handleConfirmFoods = async ({
+    foods,
+    requiresReconciliation,
+  }: {
+    foods: ParseFoodDescriptionOutput;
+    requiresReconciliation: boolean;
+  }) => {
+    setIsConfirming(true);
     try {
-      const resolvedFoods = await resolveEditedFoodsAction(foods);
+      const resolvedFoods = requiresReconciliation
+        ? await resolveEditedFoodsAction(foods)
+        : foods;
       if (editingEntry) {
         const updated = await updateFoodLogItemAction(editingEntry.id, resolvedFoods[0]!);
         if (viewer) {
@@ -237,19 +257,26 @@ export default function MacroHelperPage() {
           description: '名称与重量已重新校验并保存。',
         });
       } else if (viewer) {
-        const created = await saveParsedFoodsAction(resolvedFoods, pendingDescription);
+        const eatenAt = buildTimestampForDateKey(selectedDate);
+        const created = await saveParsedFoodsAction(
+          resolvedFoods,
+          pendingDescription,
+          eatenAt,
+          selectedDate
+        );
         setServerEntries((current) => [...created, ...current].sort((a, b) => b.timestamp - a.timestamp));
         toast({
           title: '已同步到云端',
           description: '这次记录已经保存到你的账号历史中。',
         });
       } else {
-        const timestamp = Date.now();
+        const timestamp = buildTimestampForDateKey(selectedDate);
         const draftBatchId = createEntryId();
         const newEntries: FoodLogEntry[] = resolvedFoods.map((food) => ({
           ...food,
           id: createEntryId(),
           timestamp,
+          loggedOn: selectedDate,
           draftBatchId,
         }));
         setLocalEntries((prev) => [...newEntries, ...prev]);
@@ -271,6 +298,8 @@ export default function MacroHelperPage() {
         description,
         variant: 'destructive',
       });
+    } finally {
+      setIsConfirming(false);
     }
   };
 
@@ -308,7 +337,9 @@ export default function MacroHelperPage() {
         amountBasisG: entry.amountBasisG,
         validationFlags: entry.validationFlags,
         per100g: entry.per100g,
+        per100gMeta: entry.per100gMeta,
         totals: entry.totals,
+        totalsMeta: entry.totalsMeta,
       },
     ]);
     setPendingDescription(entry.foodName);
@@ -385,7 +416,7 @@ export default function MacroHelperPage() {
               <p className="text-xs text-muted-foreground">
                 {viewer
                   ? `已登录 ${viewer.email} · 历史记录按日期同步`
-                  : '未登录时保存为本地草稿，登录后自动迁移到云端'}
+                  : '未登录时保存为本地草稿，也支持按日期筛选；登录后会自动迁移到云端'}
               </p>
             </div>
           </div>
@@ -453,33 +484,40 @@ export default function MacroHelperPage() {
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-80 p-0">
-                <ScrollArea className="h-[320px] p-4">
+                <ScrollArea className="h-[420px] p-4">
                   <div className="grid gap-4">
                     <div className="space-y-2">
                       <h4 className="font-medium leading-none">目标设定</h4>
                       <p className="text-xs text-muted-foreground">
-                        配置每日宏量与关键微量营养目标。
+                        配置每日 23 项营养目标，钠和添加糖按上限展示。
                       </p>
                     </div>
-                    <div className="grid gap-3">
-                      {GOAL_FIELDS.map((field) => (
-                        <div key={field.key} className="grid grid-cols-3 items-center gap-4">
-                          <Label htmlFor={`goal-${field.key}`} className="text-[10px]">
-                            {field.label}
-                          </Label>
-                          <Input
-                            id={`goal-${field.key}`}
-                            type="number"
-                            step="0.1"
-                            value={goals[field.key]}
-                            onChange={(e) =>
-                              updateGoal(field.key, e.target.value)
-                            }
-                            className="col-span-2 h-8 text-xs"
-                          />
+                    {GOAL_FIELD_GROUPS.map((group) => (
+                      <div key={group.id} className="space-y-3">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                          {group.label}
                         </div>
-                      ))}
-                    </div>
+                        <div className="grid gap-3">
+                          {group.fields.map((field) => (
+                            <div key={field.key} className="grid grid-cols-3 items-center gap-4">
+                              <Label htmlFor={`goal-${field.key}`} className="text-[10px]">
+                                {field.label}
+                              </Label>
+                              <Input
+                                id={`goal-${field.key}`}
+                                type="number"
+                                step="0.1"
+                                value={goals[field.key]}
+                                onChange={(e) =>
+                                  updateGoal(field.key, e.target.value)
+                                }
+                                className="col-span-2 h-8 text-xs"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </ScrollArea>
               </PopoverContent>
@@ -489,7 +527,7 @@ export default function MacroHelperPage() {
       </header>
 
       <main className="mx-auto max-w-5xl px-4 sm:px-6">
-        <DashboardSummary totals={totals} goals={goals} />
+        <DashboardSummary totals={totals.profile} totalsMeta={totals.meta} goals={goals} />
 
         <div className="mx-auto max-w-3xl">
           <FoodInputForm onFoodsParsed={handleFoodsParsed} />
@@ -511,7 +549,6 @@ export default function MacroHelperPage() {
                 value={selectedDate}
                 onChange={(e) => setSelectedDate(e.target.value)}
                 className="w-[160px] bg-white"
-                disabled={!viewer}
               />
               <Button
                 variant="outline"
@@ -543,11 +580,12 @@ export default function MacroHelperPage() {
               entries={displayEntries.slice().sort((a, b) => b.timestamp - a.timestamp)}
               onDelete={handleDeleteEntry}
               onEdit={handleEditEntry}
-              emptyTitle={viewer ? '这个日期还没有任何历史记录' : '当前还没有本地草稿'}
+              listTitle={selectedDate === TODAY ? '今日记录' : `${selectedDate} 记录`}
+              emptyTitle={viewer ? '这个日期还没有任何历史记录' : '这个日期还没有本地草稿'}
               emptyDescription={
                 viewer
                   ? '换一个日期看看，或继续录入新的饮食描述。'
-                  : '未登录时记录会保存在浏览器里，登录后会自动迁移到云端。'
+                  : '未登录时记录会保存在浏览器里，也支持按日期筛选；登录后会自动迁移到云端。'
               }
             />
           )}
@@ -557,11 +595,15 @@ export default function MacroHelperPage() {
       <ConfirmationDialog
         isOpen={isConfirmOpen}
         onClose={() => {
+          if (isConfirming) {
+            return;
+          }
           setIsConfirmOpen(false);
           setEditingEntry(null);
         }}
         parsedFoods={parsedFoods}
         onConfirm={handleConfirmFoods}
+        isSubmitting={isConfirming}
         dialogTitle={editingEntry ? '编辑历史记录' : '确认食物与重量'}
         dialogDescription={
           editingEntry

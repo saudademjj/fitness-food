@@ -1,18 +1,22 @@
 import type {ParseFoodDescriptionOutput, ValidationFlag} from '@/lib/food-contract';
+import type {FoodLogEntry} from '@/components/macro-calculator/types';
 import {getDbPool} from '@/lib/db';
 import {
   CORE_MACRO_KEYS,
   NUTRITION_PROFILE_KEYS,
+  buildNutritionProfileMeta,
   createNutritionProfile,
   pickMacroNutrients,
   type NutritionProfile23,
+  type NutritionProfileMeta23,
 } from '@/lib/nutrition-profile';
-import type {FoodLogEntry} from '@/components/macro-calculator/types';
+import {getDateKeyFromTimestamp} from '@/lib/log-date';
 
 type FoodLogItemRow = {
   item_id: string;
   food_log_id: string;
   eaten_at: Date;
+  eaten_on: string;
   source_description: string | null;
   food_name: string;
   quantity_description: string;
@@ -25,7 +29,9 @@ type FoodLogItemRow = {
   amount_basis_g: number;
   validation_flags: string[] | null;
   per100g_profile: NutritionProfile23 | null;
+  per100g_meta: NutritionProfileMeta23 | null;
   totals_profile: NutritionProfile23 | null;
+  totals_meta: NutritionProfileMeta23 | null;
   energy_kcal: number;
   protein_grams: number;
   carbohydrate_grams: number;
@@ -49,6 +55,24 @@ function normalizeStoredProfile(
   return createNutritionProfile(legacyValues);
 }
 
+function normalizeStoredMeta(
+  meta: unknown,
+  profile: NutritionProfile23,
+  sourceKind: FoodLogItemRow['source_kind']
+): NutritionProfileMeta23 {
+  if (meta && typeof meta === 'object') {
+    return meta as NutritionProfileMeta23;
+  }
+
+  const knownSource = sourceKind === 'ai_fallback' ? 'ai' : 'database';
+  const knownStatus = sourceKind === 'ai_fallback' ? 'estimated' : 'measured';
+  return buildNutritionProfileMeta(profile, {
+    knownSource,
+    knownStatus,
+    missingSource: knownSource,
+  });
+}
+
 function mapRowToEntry(row: FoodLogItemRow): FoodLogEntry {
   const validationFlags = Array.isArray(row.validation_flags)
     ? (row.validation_flags as ValidationFlag[])
@@ -65,11 +89,14 @@ function mapRowToEntry(row: FoodLogItemRow): FoodLogEntry {
     carbohydrateGrams: Number(row.total_carbohydrate_grams),
     fatGrams: Number(row.total_fat_grams),
   });
+  const per100gMeta = normalizeStoredMeta(row.per100g_meta, per100g, row.source_kind);
+  const totalsMeta = normalizeStoredMeta(row.totals_meta, totals, row.source_kind);
 
   return {
     id: row.item_id,
     foodLogId: row.food_log_id,
     timestamp: row.eaten_at.getTime(),
+    loggedOn: row.eaten_on,
     foodName: row.food_name,
     quantityDescription: row.quantity_description,
     estimatedGrams: Number(row.estimated_grams),
@@ -81,41 +108,16 @@ function mapRowToEntry(row: FoodLogItemRow): FoodLogEntry {
     amountBasisG: Number(row.amount_basis_g),
     validationFlags,
     per100g,
+    per100gMeta,
     totals,
+    totalsMeta,
   };
 }
 
 function buildLegacyCoreValues(profile: NutritionProfile23) {
   const macros = pickMacroNutrients(profile);
-  return CORE_MACRO_KEYS.map((key) => macros[key]);
+  return CORE_MACRO_KEYS.map((key) => macros[key] ?? 0);
 }
-
-const RETURNING_COLUMNS = `
-  id AS item_id,
-  $1::uuid AS food_log_id,
-  $2::timestamptz AS eaten_at,
-  $3::text AS source_description,
-  food_name,
-  quantity_description,
-  estimated_grams,
-  confidence,
-  source_kind,
-  source_label,
-  match_mode,
-  source_status,
-  amount_basis_g,
-  validation_flags,
-  per100g_profile,
-  totals_profile,
-  energy_kcal,
-  protein_grams,
-  carbohydrate_grams,
-  fat_grams,
-  total_energy_kcal,
-  total_protein_grams,
-  total_carbohydrate_grams,
-  total_fat_grams
-`;
 
 export async function listFoodLogEntries(userId: string, date?: string): Promise<FoodLogEntry[]> {
   const pool = getDbPool();
@@ -133,6 +135,7 @@ export async function listFoodLogEntries(userId: string, date?: string): Promise
         item.id AS item_id,
         fl.id AS food_log_id,
         fl.eaten_at,
+        fl.eaten_on,
         fl.source_description,
         item.food_name,
         item.quantity_description,
@@ -145,7 +148,9 @@ export async function listFoodLogEntries(userId: string, date?: string): Promise
         item.amount_basis_g,
         item.validation_flags,
         item.per100g_profile,
+        item.per100g_meta,
         item.totals_profile,
+        item.totals_meta,
         item.energy_kcal,
         item.protein_grams,
         item.carbohydrate_grams,
@@ -170,21 +175,23 @@ export async function createFoodLog(
   userId: string,
   foods: ParseFoodDescriptionOutput,
   sourceDescription?: string | null,
-  eatenAt?: number
+  eatenAt?: number,
+  eatenOn?: string
 ): Promise<FoodLogEntry[]> {
   const pool = getDbPool();
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
-    const eatenDate = eatenAt ? new Date(eatenAt) : new Date();
+    const eatenDate = typeof eatenAt === 'number' ? new Date(eatenAt) : new Date();
+    const eatenOnDate = eatenOn ?? getDateKeyFromTimestamp(eatenDate.getTime());
     const logResult = await client.query<{id: string}>(
       `
         INSERT INTO app.food_log (user_id, source_description, eaten_at, eaten_on)
         VALUES ($1, $2, $3, $4)
         RETURNING id
       `,
-      [userId, sourceDescription ?? null, eatenDate, eatenDate.toISOString().slice(0, 10)]
+      [userId, sourceDescription ?? null, eatenDate, eatenOnDate]
     );
 
     const foodLogId = logResult.rows[0]!.id;
@@ -213,7 +220,9 @@ export async function createFoodLog(
             amount_basis_g,
             validation_flags,
             per100g_profile,
+            per100g_meta,
             totals_profile,
+            totals_meta,
             energy_kcal,
             protein_grams,
             carbohydrate_grams,
@@ -225,13 +234,15 @@ export async function createFoodLog(
           )
           VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            $11::jsonb, $12::jsonb, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21
+            $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb,
+            $16, $17, $18, $19, $20, $21, $22, $23
           )
           RETURNING
             id AS item_id,
             $1::uuid AS food_log_id,
-            $22::timestamptz AS eaten_at,
-            $23::text AS source_description,
+            $24::timestamptz AS eaten_at,
+            $25::text AS source_description,
+            $26::date AS eaten_on,
             food_name,
             quantity_description,
             estimated_grams,
@@ -243,7 +254,9 @@ export async function createFoodLog(
             amount_basis_g,
             validation_flags,
             per100g_profile,
+            per100g_meta,
             totals_profile,
+            totals_meta,
             energy_kcal,
             protein_grams,
             carbohydrate_grams,
@@ -266,7 +279,9 @@ export async function createFoodLog(
           food.amountBasisG,
           JSON.stringify(food.validationFlags),
           JSON.stringify(food.per100g),
+          JSON.stringify(food.per100gMeta),
           JSON.stringify(food.totals),
+          JSON.stringify(food.totalsMeta),
           energyKcal,
           proteinGrams,
           carbohydrateGrams,
@@ -277,6 +292,7 @@ export async function createFoodLog(
           totalFat,
           eatenDate,
           sourceDescription ?? null,
+          eatenOnDate,
         ]
       );
 
@@ -320,15 +336,17 @@ export async function updateFoodLogItem(
         amount_basis_g = $11,
         validation_flags = $12::jsonb,
         per100g_profile = $13::jsonb,
-        totals_profile = $14::jsonb,
-        energy_kcal = $15,
-        protein_grams = $16,
-        carbohydrate_grams = $17,
-        fat_grams = $18,
-        total_energy_kcal = $19,
-        total_protein_grams = $20,
-        total_carbohydrate_grams = $21,
-        total_fat_grams = $22,
+        per100g_meta = $14::jsonb,
+        totals_profile = $15::jsonb,
+        totals_meta = $16::jsonb,
+        energy_kcal = $17,
+        protein_grams = $18,
+        carbohydrate_grams = $19,
+        fat_grams = $20,
+        total_energy_kcal = $21,
+        total_protein_grams = $22,
+        total_carbohydrate_grams = $23,
+        total_fat_grams = $24,
         updated_at = NOW()
       FROM app.food_log fl
       WHERE item.id = $1
@@ -338,6 +356,7 @@ export async function updateFoodLogItem(
         item.id AS item_id,
         fl.id AS food_log_id,
         fl.eaten_at,
+        fl.eaten_on,
         fl.source_description,
         item.food_name,
         item.quantity_description,
@@ -350,7 +369,9 @@ export async function updateFoodLogItem(
         item.amount_basis_g,
         item.validation_flags,
         item.per100g_profile,
+        item.per100g_meta,
         item.totals_profile,
+        item.totals_meta,
         item.energy_kcal,
         item.protein_grams,
         item.carbohydrate_grams,
@@ -374,7 +395,9 @@ export async function updateFoodLogItem(
       food.amountBasisG,
       JSON.stringify(food.validationFlags),
       JSON.stringify(food.per100g),
+      JSON.stringify(food.per100gMeta),
       JSON.stringify(food.totals),
+      JSON.stringify(food.totalsMeta),
       energyKcal,
       proteinGrams,
       carbohydrateGrams,
@@ -459,6 +482,7 @@ export async function exportFoodLogs(
     'id',
     'foodLogId',
     'timestamp',
+    'loggedOn',
     'foodName',
     'quantityDescription',
     'estimatedGrams',
@@ -466,7 +490,9 @@ export async function exportFoodLogs(
     'sourceLabel',
     'matchMode',
     'amountBasisG',
+    'per100gMeta',
     ...NUTRITION_PROFILE_KEYS.map((key) => `per100g.${key}`),
+    'totalsMeta',
     ...NUTRITION_PROFILE_KEYS.map((key) => `totals.${key}`),
     'validationFlags',
   ];
@@ -476,6 +502,7 @@ export async function exportFoodLogs(
       entry.id,
       entry.foodLogId ?? '',
       String(entry.timestamp),
+      entry.loggedOn ?? getDateKeyFromTimestamp(entry.timestamp),
       entry.foodName,
       entry.quantityDescription,
       String(entry.estimatedGrams),
@@ -483,7 +510,9 @@ export async function exportFoodLogs(
       entry.sourceLabel,
       entry.matchMode,
       String(entry.amountBasisG),
+      JSON.stringify(entry.per100gMeta),
       ...NUTRITION_PROFILE_KEYS.map((key) => String(entry.per100g[key])),
+      JSON.stringify(entry.totalsMeta),
       ...NUTRITION_PROFILE_KEYS.map((key) => String(entry.totals[key])),
       entry.validationFlags.join('|'),
     ].map((value) => `"${String(value).replace(/"/g, '""')}"`);
@@ -523,10 +552,19 @@ export async function migrateLocalDraftEntries(
       amountBasisG: entry.amountBasisG,
       validationFlags: entry.validationFlags,
       per100g: entry.per100g,
+      per100gMeta: entry.per100gMeta,
       totals: entry.totals,
+      totalsMeta: entry.totalsMeta,
     }));
     const eatenAt = Math.min(...group.map((entry) => entry.timestamp));
-    await createFoodLog(userId, foods, 'Migrated from local storage', eatenAt);
+    const eatenOn = group.find((entry) => entry.loggedOn)?.loggedOn;
+    await createFoodLog(
+      userId,
+      foods,
+      'Migrated from local storage',
+      eatenAt,
+      eatenOn
+    );
     migrated += group.length;
   }
 

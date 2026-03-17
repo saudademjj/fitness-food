@@ -1,7 +1,7 @@
 import {
   CORE_MACRO_KEYS,
   EMPTY_MACROS,
-  EMPTY_NUTRITION_PROFILE,
+  ZERO_NUTRITION_PROFILE,
   pickMacroNutrients,
   scaleNutritionProfile,
   sumNutritionProfiles,
@@ -12,7 +12,7 @@ import {
 export {
   CORE_MACRO_KEYS as MACRO_KEYS,
   EMPTY_MACROS,
-  EMPTY_NUTRITION_PROFILE,
+  ZERO_NUTRITION_PROFILE as EMPTY_NUTRITION_PROFILE,
   pickMacroNutrients,
 };
 
@@ -26,7 +26,7 @@ export function scaleMacros(
   return pickMacroNutrients(
     scaleNutritionProfile(
       {
-        ...EMPTY_NUTRITION_PROFILE,
+        ...ZERO_NUTRITION_PROFILE,
         ...per100g,
       },
       grams,
@@ -39,7 +39,7 @@ export function sumMacros(items: MacroNutrients[]): MacroNutrients {
   return pickMacroNutrients(
     sumNutritionProfiles(
       items.map((item) => ({
-        ...EMPTY_NUTRITION_PROFILE,
+        ...ZERO_NUTRITION_PROFILE,
         ...item,
       }))
     )

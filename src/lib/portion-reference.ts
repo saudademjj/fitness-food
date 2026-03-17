@@ -1,11 +1,18 @@
 import {getDbPool} from '@/lib/db';
 import {normalizeLookupText, parseQuantity} from '@/lib/food-text';
 import {
+  buildNutritionProfileMeta,
+  cloneNutritionProfileMeta,
+  createNutritionProfileMeta,
   createNutritionProfile,
+  isKnownNutritionValue,
   type NutritionFieldKey,
   type NutritionProfile23,
+  type NutritionProfileMeta23,
 } from '@/lib/nutrition-profile';
+import {getRuntimeLookupVersion} from '@/lib/runtime-cache-version';
 import type {ValidationFlag} from '@/lib/validation';
+import {getNutritionCategory, type NutritionCategory} from '@/lib/validation';
 
 type PortionReferenceRow = {
   food_name_zh: string;
@@ -27,6 +34,28 @@ type PortionModifiers = {
   preparationKey: string | null;
 };
 
+type PreparationNutritionRule = {
+  additives?: Partial<Record<NutritionFieldKey, number>>;
+  multipliers?: Partial<Record<NutritionFieldKey, number>>;
+};
+
+type FallbackPortionHeuristic = {
+  defaultGrams: number;
+  confidenceScore: number;
+  units?: Partial<Record<string, number>>;
+  densityGPerMl?: number;
+  sizeMultipliers?: Partial<Record<string, number>>;
+  preparationMultipliers?: Partial<Record<string, number>>;
+  notes: string;
+};
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __fitnessFoodPortionLookupCache:
+    | Map<string, {expiresAt: number; value: Promise<PortionLookupResult | null>}>
+    | undefined;
+}
+
 export type PortionLookupResult = {
   matchedName: string;
   defaultGrams: number;
@@ -39,6 +68,9 @@ export type PortionLookupResult = {
   notes: string | null;
   matchStrategy: 'exact' | 'keyword' | 'fallback';
 };
+
+const PORTION_LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
+const PORTION_LOOKUP_CACHE_MAX_SIZE = 512;
 
 const DEFAULT_SIZE_MULTIPLIERS: Record<string, number> = {
   小: 0.75,
@@ -59,49 +91,219 @@ const DEFAULT_PREPARATION_MULTIPLIERS: Record<string, number> = {
   汤: 1.2,
 };
 
-const DEFAULT_PREPARATION_NUTRITION_MULTIPLIERS: Record<
+const PREPARATION_NUTRITION_RULES: Record<
   string,
-  Partial<Record<NutritionFieldKey, number>>
+  {default?: PreparationNutritionRule} & Partial<
+    Record<Exclude<NutritionCategory, 'unknown'>, PreparationNutritionRule>
+  >
 > = {
   生: {},
   熟: {
-    proteinGrams: 0.99,
-    fatGrams: 0.98,
+    default: {
+      multipliers: {
+        proteinGrams: 0.99,
+        fatGrams: 0.98,
+        vitaminCMg: 0.94,
+        folateMcg: 0.95,
+      },
+    },
   },
   煮: {
-    proteinGrams: 0.98,
-    fatGrams: 0.97,
-    sodiumMg: 1.02,
+    default: {
+      multipliers: {
+        proteinGrams: 0.97,
+        fatGrams: 0.96,
+        potassiumMg: 0.92,
+        sodiumMg: 1.03,
+        thiaminMg: 0.82,
+        riboflavinMg: 0.88,
+        niacinMg: 0.92,
+        vitaminB6Mg: 0.8,
+        vitaminCMg: 0.68,
+        folateMcg: 0.72,
+      },
+    },
+    fruit_veg: {
+      multipliers: {
+        potassiumMg: 0.88,
+        vitaminCMg: 0.62,
+        folateMcg: 0.68,
+      },
+    },
+    protein_food: {
+      multipliers: {
+        thiaminMg: 0.78,
+        niacinMg: 0.9,
+        vitaminB6Mg: 0.84,
+        vitaminB12Mcg: 0.92,
+      },
+    },
+    staple: {
+      multipliers: {
+        thiaminMg: 0.8,
+        folateMcg: 0.78,
+      },
+    },
   },
   蒸: {
-    proteinGrams: 0.99,
-    fatGrams: 0.96,
+    default: {
+      multipliers: {
+        proteinGrams: 0.99,
+        fatGrams: 0.97,
+        vitaminCMg: 0.88,
+        folateMcg: 0.9,
+      },
+    },
+    fruit_veg: {
+      multipliers: {
+        vitaminCMg: 0.8,
+        folateMcg: 0.84,
+      },
+    },
   },
   炒: {
-    fatGrams: 1.16,
-    sodiumMg: 1.08,
+    default: {
+      additives: {
+        fatGrams: 4,
+      },
+      multipliers: {
+        sodiumMg: 1.08,
+      },
+    },
+    fruit_veg: {
+      additives: {
+        fatGrams: 5.5,
+      },
+      multipliers: {
+        vitaminCMg: 0.72,
+        folateMcg: 0.78,
+        thiaminMg: 0.85,
+        riboflavinMg: 0.9,
+      },
+    },
+    protein_food: {
+      additives: {
+        fatGrams: 4.5,
+      },
+      multipliers: {
+        thiaminMg: 0.9,
+        niacinMg: 0.95,
+        vitaminB6Mg: 0.9,
+      },
+    },
+    staple: {
+      additives: {
+        fatGrams: 3.2,
+      },
+      multipliers: {
+        thiaminMg: 0.9,
+        riboflavinMg: 0.94,
+      },
+    },
+    mixed_dish: {
+      additives: {
+        fatGrams: 3.8,
+      },
+      multipliers: {
+        vitaminCMg: 0.82,
+        folateMcg: 0.85,
+      },
+    },
   },
   炸: {
-    carbohydrateGrams: 1.04,
-    fatGrams: 1.35,
-    sodiumMg: 1.1,
+    default: {
+      additives: {
+        fatGrams: 12,
+      },
+      multipliers: {
+        carbohydrateGrams: 1.03,
+        sodiumMg: 1.12,
+        vitaminCMg: 0.55,
+        folateMcg: 0.6,
+        thiaminMg: 0.72,
+        riboflavinMg: 0.82,
+      },
+    },
+    protein_food: {
+      additives: {
+        fatGrams: 14,
+      },
+      multipliers: {
+        niacinMg: 0.9,
+        vitaminB6Mg: 0.78,
+        vitaminB12Mcg: 0.9,
+      },
+    },
+    staple: {
+      additives: {
+        fatGrams: 10,
+      },
+      multipliers: {
+        thiaminMg: 0.78,
+      },
+    },
+    mixed_dish: {
+      additives: {
+        fatGrams: 11,
+      },
+    },
   },
   烤: {
-    fatGrams: 1.08,
-    sodiumMg: 1.04,
+    default: {
+      additives: {
+        fatGrams: 2.5,
+      },
+      multipliers: {
+        sodiumMg: 1.05,
+        vitaminCMg: 0.76,
+        thiaminMg: 0.88,
+        vitaminB6Mg: 0.9,
+      },
+    },
   },
   炖: {
-    fatGrams: 1.05,
-    sodiumMg: 1.06,
+    default: {
+      multipliers: {
+        sodiumMg: 1.06,
+        potassiumMg: 0.9,
+        vitaminCMg: 0.78,
+        folateMcg: 0.84,
+        thiaminMg: 0.86,
+      },
+    },
+    protein_food: {
+      multipliers: {
+        fatGrams: 0.98,
+        vitaminB12Mcg: 0.94,
+      },
+    },
   },
   汤: {
-    proteinGrams: 0.72,
-    carbohydrateGrams: 0.88,
-    fatGrams: 0.62,
-    sodiumMg: 1.12,
-    potassiumMg: 0.84,
-    calciumMg: 0.9,
-    ironMg: 0.82,
+    default: {
+      multipliers: {
+        proteinGrams: 0.74,
+        carbohydrateGrams: 0.9,
+        fatGrams: 0.7,
+        sodiumMg: 1.12,
+        potassiumMg: 0.82,
+        calciumMg: 0.92,
+        ironMg: 0.84,
+        vitaminCMg: 0.62,
+        thiaminMg: 0.72,
+        riboflavinMg: 0.8,
+        folateMcg: 0.68,
+      },
+    },
+    fruit_veg: {
+      multipliers: {
+        vitaminCMg: 0.55,
+      },
+    },
+    protein_food: {
+      multipliers: {
+        vitaminB12Mcg: 0.9,
+      },
+    },
   },
 };
 
@@ -130,251 +332,197 @@ const GENERIC_UNIT_GRAMS: Record<string, number> = {
   克: 1,
 };
 
-const FALLBACK_PROFILES: Array<{
-  keywords: RegExp;
-  defaultGrams: number;
-  confidenceScore: number;
-  units?: Partial<Record<string, number>>;
-  densityGPerMl?: number;
-  sizeMultipliers?: Partial<Record<string, number>>;
-  preparationMultipliers?: Partial<Record<string, number>>;
+const CATEGORY_FALLBACK_HEURISTICS: Record<
+  Exclude<NutritionCategory, 'unknown'>,
+  FallbackPortionHeuristic
+> = {
+  beverage: {
+    defaultGrams: 330,
+    confidenceScore: 0.62,
+    units: {杯: 330, 碗: 300, 瓶: 500, 罐: 330, ml: 1, 毫升: 1},
+    densityGPerMl: 1,
+    notes: '按饮品类别的通用杯量估重。',
+  },
+  fruit_veg: {
+    defaultGrams: 180,
+    confidenceScore: 0.58,
+    units: {个: 180, 只: 180, 块: 90, 片: 90, 根: 120, 颗: 15, 份: 180},
+    notes: '按蔬果类别的常见可食部估重。',
+  },
+  protein_food: {
+    defaultGrams: 150,
+    confidenceScore: 0.6,
+    units: {份: 150, 块: 150, 片: 100, 个: 85, 只: 85, 串: 35},
+    preparationMultipliers: {炸: 0.92, 烤: 0.9, 炖: 1.08},
+    notes: '按蛋白类成品单份的通用熟重估重。',
+  },
+  staple: {
+    defaultGrams: 180,
+    confidenceScore: 0.58,
+    units: {碗: 180, 份: 180, 个: 100, 只: 100, 片: 30, 根: 80},
+    notes: '按主食类别的常见份量估重。',
+  },
+  mixed_dish: {
+    defaultGrams: 260,
+    confidenceScore: 0.55,
+    units: {份: 260, 盘: 260, 碗: 300, 盒: 320},
+    preparationMultipliers: {炒: 1.08, 汤: 1.18, 炖: 1.1},
+    notes: '按成品菜/复合餐的一般出品重量估重。',
+  },
+  dessert_snack: {
+    defaultGrams: 90,
+    confidenceScore: 0.56,
+    units: {块: 90, 片: 90, 个: 60, 只: 60, 份: 100},
+    notes: '按零食甜点的常见单份估重。',
+  },
+};
+
+const FORM_FACTOR_FALLBACK_RULES: Array<{
+  pattern: RegExp;
+  heuristic: FallbackPortionHeuristic;
 }> = [
   {
-    keywords: /包子|肉包|菜包|叉烧包|流沙包/i,
-    defaultGrams: 110,
-    confidenceScore: 0.84,
-    units: {个: 110, 只: 110},
+    pattern: /(豆浆|豆乳)/i,
+    heuristic: {
+      defaultGrams: 300,
+      confidenceScore: 0.72,
+      units: {杯: 300, 碗: 300, 盒: 250, 瓶: 300, ml: 1.02, 毫升: 1.02},
+      densityGPerMl: 1.02,
+      notes: '按豆制饮品的常见杯量估重。',
+    },
   },
   {
-    keywords: /小笼包/i,
-    defaultGrams: 35,
-    confidenceScore: 0.9,
-    units: {个: 35, 只: 35},
+    pattern: /(牛奶|酸奶|奶昔)/i,
+    heuristic: {
+      defaultGrams: 250,
+      confidenceScore: 0.7,
+      units: {杯: 250, 盒: 250, 瓶: 250, ml: 1.03, 毫升: 1.03},
+      densityGPerMl: 1.03,
+      notes: '按乳制饮品的常见包装规格估重。',
+    },
   },
   {
-    keywords: /豆浆/i,
-    defaultGrams: 300,
-    confidenceScore: 0.92,
-    units: {杯: 300, 碗: 300, 盒: 250, 瓶: 300, ml: 1.02, 毫升: 1.02},
-    densityGPerMl: 1.02,
+    pattern: /(可乐|雪碧|芬达|汽水|苏打|气泡水|饮料)/i,
+    heuristic: {
+      defaultGrams: 330,
+      confidenceScore: 0.68,
+      units: {罐: 330, 瓶: 500, 杯: 330, ml: 1, 毫升: 1},
+      densityGPerMl: 1,
+      notes: '按常见包装饮料规格估重。',
+    },
   },
   {
-    keywords: /牛奶|酸奶/i,
-    defaultGrams: 250,
-    confidenceScore: 0.9,
-    units: {杯: 250, 盒: 250, 瓶: 250, ml: 1.03, 毫升: 1.03},
-    densityGPerMl: 1.03,
+    pattern: /(奶茶|果汁|咖啡|拿铁|美式|乌龙|红茶|绿茶|柠檬水)/i,
+    heuristic: {
+      defaultGrams: 450,
+      confidenceScore: 0.64,
+      units: {杯: 450, 瓶: 500, ml: 1.01, 毫升: 1.01},
+      densityGPerMl: 1.01,
+      notes: '按现制饮品常见大杯规格估重。',
+    },
   },
   {
-    keywords: /可乐|雪碧|芬达|汽水|饮料/i,
-    defaultGrams: 330,
-    confidenceScore: 0.88,
-    units: {罐: 330, 瓶: 500, 杯: 330, ml: 1, 毫升: 1},
-    densityGPerMl: 1,
+    pattern: /(粥)/i,
+    heuristic: {
+      defaultGrams: 300,
+      confidenceScore: 0.68,
+      units: {碗: 300, 杯: 300, 份: 300},
+      notes: '按粥品单碗成品估重。',
+    },
   },
   {
-    keywords: /奶茶|果汁|咖啡/i,
-    defaultGrams: 500,
-    confidenceScore: 0.82,
-    units: {杯: 500, 瓶: 500, ml: 1.01, 毫升: 1.01},
-    densityGPerMl: 1.01,
+    pattern: /(汤|羹|煲)/i,
+    heuristic: {
+      defaultGrams: 380,
+      confidenceScore: 0.62,
+      units: {碗: 380, 份: 380, 盒: 450},
+      preparationMultipliers: {汤: 1.18},
+      notes: '按含汤成品的常见单碗重量估重。',
+    },
   },
   {
-    keywords: /米饭|白饭/i,
-    defaultGrams: 180,
-    confidenceScore: 0.94,
-    units: {碗: 180, 份: 180},
+    pattern: /(米饭|白饭|炒饭|盖饭|焖饭|烩饭|便当|套餐|饭团)/i,
+    heuristic: {
+      defaultGrams: 260,
+      confidenceScore: 0.65,
+      units: {碗: 180, 份: 260, 盘: 320, 盒: 320, 个: 110},
+      preparationMultipliers: {炒: 1.08},
+      notes: '按饭类主食或盒饭的通用成品份量估重。',
+    },
   },
   {
-    keywords: /炒饭|盖饭|焗饭|便当/i,
-    defaultGrams: 320,
-    confidenceScore: 0.8,
-    units: {盘: 320, 份: 320, 碗: 300},
-    preparationMultipliers: {炒: 1.08},
+    pattern: /(拉面|汤面|炒面|拌面|面条|米线|河粉|粉丝|粉条|意面|肠粉)/i,
+    heuristic: {
+      defaultGrams: 340,
+      confidenceScore: 0.64,
+      units: {碗: 340, 份: 340, 盘: 320},
+      notes: '按面/粉类主食的通用成品份量估重。',
+    },
   },
   {
-    keywords: /面条|拌面|炒面|拉面|刀削面|炸酱面|热干面/i,
-    defaultGrams: 320,
-    confidenceScore: 0.82,
-    units: {碗: 320, 份: 320},
+    pattern: /(包子|馒头|花卷|烧卖|小笼|煎饼|饼)/i,
+    heuristic: {
+      defaultGrams: 100,
+      confidenceScore: 0.63,
+      units: {个: 100, 只: 100, 份: 120, 片: 60},
+      notes: '按面点类单份成品估重。',
+    },
   },
   {
-    keywords: /米线|河粉|粉丝|粉条|酸辣粉/i,
-    defaultGrams: 380,
-    confidenceScore: 0.8,
-    units: {碗: 380, 份: 380},
+    pattern: /(汉堡|三明治|卷饼|披萨)/i,
+    heuristic: {
+      defaultGrams: 220,
+      confidenceScore: 0.64,
+      units: {个: 220, 只: 220, 份: 220, 片: 120, 块: 120},
+      notes: '按西式快餐/烘焙主食的常见单份估重。',
+    },
   },
   {
-    keywords: /螺蛳粉/i,
-    defaultGrams: 450,
-    confidenceScore: 0.84,
-    units: {碗: 450, 份: 450},
+    pattern: /(鸡蛋|鸭蛋|鹌鹑蛋|茶叶蛋|卤蛋|煮蛋|蒸蛋|炒蛋)/i,
+    heuristic: {
+      defaultGrams: 50,
+      confidenceScore: 0.7,
+      units: {个: 50, 只: 50, 颗: 50},
+      notes: '按蛋类单枚可食部估重。',
+    },
   },
   {
-    keywords: /肠粉/i,
-    defaultGrams: 250,
-    confidenceScore: 0.9,
-    units: {份: 250, 盘: 250},
+    pattern: /(饺子|锅贴|馄饨|汤圆|粽子)/i,
+    heuristic: {
+      defaultGrams: 28,
+      confidenceScore: 0.62,
+      units: {个: 28, 只: 28, 颗: 28, 碗: 240},
+      notes: '按点心类单枚或单碗份量估重。',
+    },
   },
   {
-    keywords: /煎饼果子|煎饼馃子/i,
-    defaultGrams: 280,
-    confidenceScore: 0.9,
-    units: {份: 280, 个: 280},
+    pattern: /(肉串|烤串|串烧|串)/i,
+    heuristic: {
+      defaultGrams: 35,
+      confidenceScore: 0.66,
+      units: {串: 35, 根: 35},
+      preparationMultipliers: {烤: 0.9},
+      notes: '按串烧类单串熟重估重。',
+    },
   },
   {
-    keywords: /粥|白粥|小米粥|南瓜粥/i,
-    defaultGrams: 300,
-    confidenceScore: 0.9,
-    units: {碗: 300, 杯: 300},
+    pattern: /(薯条|鸡块|炸鸡|炸物)/i,
+    heuristic: {
+      defaultGrams: 110,
+      confidenceScore: 0.62,
+      units: {份: 110, 包: 110, 块: 45, 个: 45},
+      preparationMultipliers: {炸: 0.9},
+      notes: '按常见油炸快餐单份估重。',
+    },
   },
   {
-    keywords: /汤|排骨汤|蛋花汤|紫菜蛋花汤/i,
-    defaultGrams: 380,
-    confidenceScore: 0.78,
-    units: {碗: 380, 份: 380},
-    preparationMultipliers: {汤: 1.18},
-  },
-  {
-    keywords: /麻辣烫/i,
-    defaultGrams: 650,
-    confidenceScore: 0.72,
-    units: {份: 650, 碗: 650, 盒: 700},
-    preparationMultipliers: {汤: 1.18},
-  },
-  {
-    keywords: /火锅/i,
-    defaultGrams: 700,
-    confidenceScore: 0.65,
-    units: {份: 700, 锅: 900},
-    preparationMultipliers: {汤: 1.2},
-  },
-  {
-    keywords: /鸡蛋|茶叶蛋|卤蛋|煮蛋|蒸蛋|炒蛋/i,
-    defaultGrams: 50,
-    confidenceScore: 0.95,
-    units: {个: 50, 只: 50, 颗: 50},
-  },
-  {
-    keywords: /馒头/i,
-    defaultGrams: 100,
-    confidenceScore: 0.92,
-    units: {个: 100, 只: 100},
-  },
-  {
-    keywords: /面包|吐司|法棍/i,
-    defaultGrams: 80,
-    confidenceScore: 0.8,
-    units: {片: 30, 个: 80, 只: 80},
-  },
-  {
-    keywords: /鸡胸肉|鸡腿|鸡翅|鸡肉/i,
-    defaultGrams: 150,
-    confidenceScore: 0.84,
-    units: {块: 150, 片: 100, 份: 150, 个: 85, 只: 85},
-    preparationMultipliers: {炸: 0.9, 烤: 0.88, 炒: 1.05},
-  },
-  {
-    keywords: /牛排|牛肉|羊肉|猪肉|排骨/i,
-    defaultGrams: 160,
-    confidenceScore: 0.82,
-    units: {块: 160, 片: 120, 份: 160},
-    preparationMultipliers: {炸: 0.92, 烤: 0.9, 炒: 1.06, 炖: 1.1},
-  },
-  {
-    keywords: /鱼排|鱼肉|虾|三文鱼|鳕鱼/i,
-    defaultGrams: 150,
-    confidenceScore: 0.82,
-    units: {块: 150, 片: 120, 份: 150, 串: 35},
-    preparationMultipliers: {炸: 0.9, 烤: 0.88, 蒸: 0.95},
-  },
-  {
-    keywords: /宫保鸡丁|番茄炒蛋|红烧肉|回锅肉|麻婆豆腐|鱼香肉丝/i,
-    defaultGrams: 220,
-    confidenceScore: 0.84,
-    units: {份: 220, 盘: 220},
-    preparationMultipliers: {炒: 1.08, 炖: 1.1},
-  },
-  {
-    keywords: /披萨/i,
-    defaultGrams: 320,
-    confidenceScore: 0.9,
-    units: {份: 320, 片: 120, 块: 120},
-  },
-  {
-    keywords: /汉堡|三明治|卷饼/i,
-    defaultGrams: 220,
-    confidenceScore: 0.86,
-    units: {个: 220, 份: 220, 只: 220},
-  },
-  {
-    keywords: /蛋糕|芝士蛋糕|慕斯蛋糕/i,
-    defaultGrams: 90,
-    confidenceScore: 0.9,
-    units: {块: 90, 片: 90, 份: 100},
-  },
-  {
-    keywords: /蛋挞|葡式蛋挞/i,
-    defaultGrams: 55,
-    confidenceScore: 0.92,
-    units: {个: 55, 只: 55},
-  },
-  {
-    keywords: /饺子|水饺|煎饺|锅贴/i,
-    defaultGrams: 25,
-    confidenceScore: 0.86,
-    units: {个: 25, 只: 25},
-  },
-  {
-    keywords: /馄饨/i,
-    defaultGrams: 18,
-    confidenceScore: 0.84,
-    units: {个: 18, 只: 18, 碗: 240},
-  },
-  {
-    keywords: /油条|麻花/i,
-    defaultGrams: 55,
-    confidenceScore: 0.9,
-    units: {根: 55, 条: 55},
-  },
-  {
-    keywords: /苹果|梨|橙子|桃子|芒果|猕猴桃|香蕉/i,
-    defaultGrams: 180,
-    confidenceScore: 0.88,
-    units: {个: 180, 只: 180, 根: 120},
-  },
-  {
-    keywords: /西瓜|哈密瓜|菠萝/i,
-    defaultGrams: 250,
-    confidenceScore: 0.78,
-    units: {块: 250, 片: 180},
-  },
-  {
-    keywords: /玉米|红薯|土豆/i,
-    defaultGrams: 200,
-    confidenceScore: 0.82,
-    units: {根: 180, 个: 200, 只: 200, 块: 100},
-  },
-  {
-    keywords: /烤羊肉串|牛肉串|鸡肉串|羊肉串/i,
-    defaultGrams: 35,
-    confidenceScore: 0.9,
-    units: {串: 35, 根: 35},
-    preparationMultipliers: {烤: 0.88},
-  },
-  {
-    keywords: /炸鸡块|鸡块|麦乐鸡/i,
-    defaultGrams: 45,
-    confidenceScore: 0.88,
-    units: {块: 45, 个: 45, 份: 270},
-    preparationMultipliers: {炸: 0.9},
-  },
-  {
-    keywords: /薯条/i,
-    defaultGrams: 110,
-    confidenceScore: 0.9,
-    units: {份: 110, 包: 110},
-    preparationMultipliers: {炸: 0.9},
+    pattern: /(蛋糕|蛋挞|面包|吐司|法棍|甜点|饼干)/i,
+    heuristic: {
+      defaultGrams: 90,
+      confidenceScore: 0.6,
+      units: {块: 90, 片: 90, 个: 80, 只: 80, 份: 100},
+      notes: '按烘焙甜点的常见切块/单份估重。',
+    },
   },
 ];
 
@@ -398,6 +546,30 @@ function parseRow(row: PortionReferenceRow, matchStrategy: 'exact' | 'keyword'):
     sourceLabel: row.reference_source,
     notes: row.notes,
     matchStrategy,
+  };
+}
+
+function buildFallbackPortionResult(
+  foodName: string,
+  heuristic: FallbackPortionHeuristic
+): PortionLookupResult {
+  return {
+    matchedName: foodName,
+    defaultGrams: heuristic.defaultGrams,
+    unitGrams: sanitizeNumberRecord(heuristic.units ?? {}),
+    sizeMultipliers: sanitizeNumberRecord({
+      ...DEFAULT_SIZE_MULTIPLIERS,
+      ...(heuristic.sizeMultipliers ?? {}),
+    }),
+    preparationMultipliers: sanitizeNumberRecord({
+      ...DEFAULT_PREPARATION_MULTIPLIERS,
+      ...(heuristic.preparationMultipliers ?? {}),
+    }),
+    densityGPerMl: heuristic.densityGPerMl ?? null,
+    confidenceScore: heuristic.confidenceScore,
+    sourceLabel: '应用内通用回退估算',
+    notes: heuristic.notes,
+    matchStrategy: 'fallback',
   };
 }
 
@@ -509,7 +681,8 @@ async function queryKeywordPortion(normalizedName: string): Promise<PortionRefer
         pr.notes,
         pr.priority
       FROM core.portion_reference pr
-      JOIN LATERAL unnest(pr.keyword_patterns) keyword(keyword) ON $1 LIKE '%' || keyword || '%'
+      JOIN LATERAL unnest(pr.keyword_patterns) keyword(keyword)
+        ON position(keyword.keyword in $1) > 0
       ORDER BY pr.priority ASC, char_length(keyword.keyword) DESC
       LIMIT 1
     `,
@@ -519,31 +692,65 @@ async function queryKeywordPortion(normalizedName: string): Promise<PortionRefer
 }
 
 function getFallbackProfile(foodName: string): PortionLookupResult | null {
-  const matched = FALLBACK_PROFILES.find((profile) => profile.keywords.test(foodName));
-  if (!matched) {
-    return null;
+  const baseName = extractPortionModifiers(foodName).baseName || foodName;
+  const matchedFormFactor = FORM_FACTOR_FALLBACK_RULES.find((rule) => rule.pattern.test(baseName));
+  if (matchedFormFactor) {
+    return buildFallbackPortionResult(foodName, matchedFormFactor.heuristic);
   }
 
-  const unitGrams = sanitizeNumberRecord(matched.units ?? {});
+  const category = getNutritionCategory(baseName);
+  if (category !== 'unknown') {
+    return buildFallbackPortionResult(foodName, CATEGORY_FALLBACK_HEURISTICS[category]);
+  }
 
-  return {
-    matchedName: foodName,
-    defaultGrams: matched.defaultGrams,
-    unitGrams,
-    sizeMultipliers: sanitizeNumberRecord({
-      ...DEFAULT_SIZE_MULTIPLIERS,
-      ...(matched.sizeMultipliers ?? {}),
-    }),
-    preparationMultipliers: sanitizeNumberRecord({
-      ...DEFAULT_PREPARATION_MULTIPLIERS,
-      ...(matched.preparationMultipliers ?? {}),
-    }),
-    densityGPerMl: matched.densityGPerMl ?? null,
-    confidenceScore: matched.confidenceScore,
-    sourceLabel: '应用内回退份量表',
-    notes: null,
-    matchStrategy: 'fallback',
-  };
+  return buildFallbackPortionResult(foodName, {
+    defaultGrams: 100,
+    confidenceScore: 0.45,
+    units: {份: 100, 个: 100, 只: 100, 碗: 220, 杯: 250},
+    notes: '无法从名称推断明确形态时，使用最保守的 100g 通用份量。',
+  });
+}
+
+function getPortionLookupCache() {
+  if (!global.__fitnessFoodPortionLookupCache) {
+    global.__fitnessFoodPortionLookupCache = new Map();
+  }
+
+  return global.__fitnessFoodPortionLookupCache;
+}
+
+function withPortionLookupCache(
+  key: string,
+  loader: () => Promise<PortionLookupResult | null>
+): Promise<PortionLookupResult | null> {
+  const cache = getPortionLookupCache();
+  const now = Date.now();
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const value = loader().catch((error) => {
+    cache.delete(key);
+    throw error;
+  });
+  cache.set(key, {
+    expiresAt: now + PORTION_LOOKUP_CACHE_TTL_MS,
+    value,
+  });
+
+  if (cache.size > PORTION_LOOKUP_CACHE_MAX_SIZE) {
+    for (const [cacheKey, entry] of cache.entries()) {
+      if (entry.expiresAt <= now) {
+        cache.delete(cacheKey);
+      }
+      if (cache.size <= PORTION_LOOKUP_CACHE_MAX_SIZE) {
+        break;
+      }
+    }
+  }
+
+  return value;
 }
 
 export async function lookupPortionReference(
@@ -563,25 +770,37 @@ export async function lookupPortionReference(
     })
   )];
 
-  try {
-    const exactRows = await Promise.all(normalizedCandidates.map((candidate) => queryExactPortion(candidate)));
-    const exact = exactRows.find((row) => row !== null);
-    if (exact) {
-      return parseRow(exact, 'exact');
+  const lookupVersion = await getRuntimeLookupVersion('lookup');
+  const cacheKey =
+    `${lookupVersion}:` +
+    (normalizedCandidates.join('|') || normalizeLookupText(matchedName ?? foodName));
+
+  return withPortionLookupCache(cacheKey, async () => {
+    try {
+      const exactRows = await Promise.all(
+        normalizedCandidates.map((candidate) => queryExactPortion(candidate))
+      );
+      const exact = exactRows.find((row) => row !== null);
+      if (exact) {
+        return parseRow(exact, 'exact');
+      }
+
+      const keywordRows = await Promise.all(
+        normalizedCandidates.map((candidate) => queryKeywordPortion(candidate))
+      );
+      const keyword = keywordRows.find((row) => row !== null);
+      if (keyword) {
+        return parseRow(keyword, 'keyword');
+      }
+    } catch (error) {
+      console.warn(
+        'portion_reference lookup failed, falling back to in-app heuristic estimation.',
+        error
+      );
     }
 
-    const keywordRows = await Promise.all(
-      normalizedCandidates.map((candidate) => queryKeywordPortion(candidate))
-    );
-    const keyword = keywordRows.find((row) => row !== null);
-    if (keyword) {
-      return parseRow(keyword, 'keyword');
-    }
-  } catch {
-    // Keep runtime resilient before the migration is applied.
-  }
-
-  return getFallbackProfile(matchedName ?? foodName);
+    return getFallbackProfile(matchedName ?? foodName);
+  });
 }
 
 export async function estimateGrams(
@@ -619,6 +838,8 @@ export async function estimateGrams(
       validationFlags.push('portion_reference_applied');
     } else if (portion?.matchStrategy === 'keyword') {
       validationFlags.push('portion_keyword_applied');
+    } else if (portion?.matchStrategy === 'fallback') {
+      validationFlags.push('portion_fallback_applied');
     }
 
     return {
@@ -664,6 +885,8 @@ export async function estimateGrams(
     validationFlags.push('portion_reference_applied');
   } else if (portion?.matchStrategy === 'keyword') {
     validationFlags.push('portion_keyword_applied');
+  } else if (portion?.matchStrategy === 'fallback') {
+    validationFlags.push('portion_fallback_applied');
   }
 
   return {
@@ -681,8 +904,63 @@ function round(value: number): number {
   return Number(value.toFixed(1));
 }
 
-function recomputeEnergy(profile: NutritionProfile23): NutritionProfile23 {
-  return createNutritionProfile({
+function mergePreparationRules(...rules: Array<PreparationNutritionRule | undefined>): PreparationNutritionRule {
+  return rules.reduce<PreparationNutritionRule>(
+    (acc, rule) => {
+      if (!rule) {
+        return acc;
+      }
+
+      for (const [fieldKey, value] of Object.entries(rule.multipliers ?? {}) as Array<
+        [NutritionFieldKey, number]
+      >) {
+        acc.multipliers ??= {};
+        acc.multipliers[fieldKey] = (acc.multipliers[fieldKey] ?? 1) * value;
+      }
+
+      for (const [fieldKey, value] of Object.entries(rule.additives ?? {}) as Array<
+        [NutritionFieldKey, number]
+      >) {
+        acc.additives ??= {};
+        acc.additives[fieldKey] = (acc.additives[fieldKey] ?? 0) + value;
+      }
+
+      return acc;
+    },
+    {}
+  );
+}
+
+function getPreparationNutritionRule(
+  preparationKey: string,
+  category: NutritionCategory
+): PreparationNutritionRule | null {
+  const ruleTable = PREPARATION_NUTRITION_RULES[preparationKey];
+  if (!ruleTable) {
+    return null;
+  }
+
+  const mergedRule = mergePreparationRules(
+    ruleTable.default,
+    category === 'unknown' ? undefined : ruleTable[category]
+  );
+
+  return mergedRule.additives || mergedRule.multipliers ? mergedRule : null;
+}
+
+function recomputeEnergy(
+  profile: NutritionProfile23,
+  meta: NutritionProfileMeta23
+): {profile: NutritionProfile23; meta: NutritionProfileMeta23} {
+  if (
+    !isKnownNutritionValue(profile.proteinGrams) ||
+    !isKnownNutritionValue(profile.carbohydrateGrams) ||
+    !isKnownNutritionValue(profile.fatGrams)
+  ) {
+    return {profile, meta};
+  }
+
+  const nextProfile = createNutritionProfile({
     ...profile,
     energyKcal: round(
       profile.proteinGrams * 4 +
@@ -690,29 +968,95 @@ function recomputeEnergy(profile: NutritionProfile23): NutritionProfile23 {
         profile.fatGrams * 9
     ),
   });
+  const nextMeta = cloneNutritionProfileMeta(meta);
+  nextMeta.energyKcal = {
+    status: 'estimated',
+    source: nextMeta.energyKcal.source,
+  };
+
+  return {
+    profile: nextProfile,
+    meta: nextMeta,
+  };
 }
 
 export function applyPreparationNutritionAdjustments(
   profile: NutritionProfile23,
+  meta: NutritionProfileMeta23 | undefined,
   foodName: string,
   matchedName?: string | null
-): NutritionProfile23 {
+): {profile: NutritionProfile23; meta: NutritionProfileMeta23} {
   const preparationKey = derivePreparationKey(foodName, matchedName);
   if (!preparationKey) {
-    return profile;
+    return {
+      profile,
+      meta:
+        meta ??
+        buildNutritionProfileMeta(profile, {
+          knownStatus: 'estimated',
+          knownSource: 'mixed',
+          missingSource: 'mixed',
+        }),
+    };
   }
 
-  const multipliers = DEFAULT_PREPARATION_NUTRITION_MULTIPLIERS[preparationKey];
-  if (!multipliers) {
-    return profile;
+  const category = getNutritionCategory(matchedName ?? foodName);
+  const rule = getPreparationNutritionRule(preparationKey, category);
+  if (!rule) {
+    return {
+      profile,
+      meta:
+        meta ??
+        buildNutritionProfileMeta(profile, {
+          knownStatus: 'estimated',
+          knownSource: 'mixed',
+          missingSource: 'mixed',
+        }),
+    };
   }
 
   const adjusted = createNutritionProfile(profile);
-  for (const [fieldKey, multiplier] of Object.entries(multipliers) as Array<
+  const adjustedMeta =
+    meta ??
+    createNutritionProfileMeta(
+      buildNutritionProfileMeta(profile, {
+        knownStatus: 'estimated',
+        knownSource: 'mixed',
+        missingSource: 'mixed',
+      })
+    );
+
+  for (const [fieldKey, multiplier] of Object.entries(rule.multipliers ?? {}) as Array<
     [NutritionFieldKey, number]
   >) {
-    adjusted[fieldKey] = round(adjusted[fieldKey] * multiplier);
+    if (!isKnownNutritionValue(adjusted[fieldKey])) {
+      continue;
+    }
+
+    adjusted[fieldKey] = round(Math.max(0, adjusted[fieldKey]! * multiplier));
+    if (adjustedMeta[fieldKey].status !== 'missing') {
+      adjustedMeta[fieldKey] = {
+        status: 'estimated',
+        source: adjustedMeta[fieldKey].source,
+      };
+    }
   }
 
-  return recomputeEnergy(adjusted);
+  for (const [fieldKey, delta] of Object.entries(rule.additives ?? {}) as Array<
+    [NutritionFieldKey, number]
+  >) {
+    if (!isKnownNutritionValue(adjusted[fieldKey])) {
+      continue;
+    }
+
+    adjusted[fieldKey] = round(Math.max(0, adjusted[fieldKey]! + delta));
+    if (adjustedMeta[fieldKey].status !== 'missing') {
+      adjustedMeta[fieldKey] = {
+        status: 'estimated',
+        source: adjustedMeta[fieldKey].source,
+      };
+    }
+  }
+
+  return recomputeEnergy(adjusted, adjustedMeta);
 }

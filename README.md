@@ -5,7 +5,7 @@
 - 简单单品描述优先直接命中 `PostgreSQL` 营养数据库，尽量不调用模型
 - `Gemini 3 Flash Preview` 只在复杂描述时负责食物拆解、默认克重估算和兜底营养估算
 - `PostgreSQL` 负责提供真实营养值，优先命中标准食谱和营养库
-- 前端默认展示 `热量、蛋白质、碳水、脂肪、膳食纤维、钠、钙、铁` 进度，但每条记录、确认弹窗和今日汇总都可展开完整 23 项营养
+- 前端默认按分组展示完整 `23` 项营养目标进度，包含 `potassium / zinc / vitaminA / vitaminC / vitaminD / vitaminB12 / folate` 等微量
 - 用户在确认弹窗里调节重量后，数值会本地实时重算，不会重复消耗模型额度
 - 新增邮箱魔法链接登录、云端历史记录、导出、服务端限流和本地草稿迁移
 
@@ -26,7 +26,7 @@
 - `app.*` 运行时表：支持用户、session、历史记录、导出和数据库限流
 - `app.food_log_item.per100g_profile / totals_profile`：以 JSONB 存储完整 23 项营养
 - `app.lookup_miss_telemetry`：记录发布层 miss，供后续 alias / ETL 补齐
-- `generate_food_questions.py` 现在会同时输出 `question` 和 `expected_output_json`
+- `generate_food_questions.py` 现在会同时输出 `question` 和 `expected_output_json`，DB miss 时优先保留为 `fallback_ready` 样本而不是整条丢弃
 - 运行时会检查 `app_food_profile_23 / app_recipe_profile_23 / app_catalog_profile_23` 是否有数据，首次部署忘记 refresh 时会直接给出明确报错
 
 ## 数据库初始化
@@ -112,3 +112,5 @@
 - `npm run build`：生成生产构建
 - `npm run start`：启动生产服务
 - `npm run typecheck`：执行 TypeScript 检查
+- `npm run report:runtime-db`：输出 `portion_reference` seed 量、发布层 publish_ready 规模和近 7 天 lookup miss 热点
+- `python /Users/saudade/Downloads/微调_食物描述/generate_food_questions.py --coverage-report coverage.json`：导出训练词池 exact / fuzzy / fallback / miss 覆盖率

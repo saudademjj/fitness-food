@@ -55,3 +55,4 @@ refresh_if_materialized() {
 refresh_if_materialized core app_food_profile_23
 refresh_if_materialized core app_recipe_profile_23
 refresh_if_materialized core app_catalog_profile_23
+run_psql -c "SELECT app.bump_runtime_cache_state('lookup');"

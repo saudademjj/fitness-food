@@ -1,61 +1,67 @@
 
 import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
 import {
+  CORE_MACRO_KEYS,
   NUTRITION_PROFILE_KEYS,
+  aggregateNutritionProfiles,
+  buildNutritionProfileMeta,
+  cloneNutritionProfileMeta,
   createNutritionProfile,
+  getNutrientFieldMeta,
+  NUTRIENT_GROUPS,
   scaleNutritionProfile,
-  sumNutritionProfiles,
+  type NutritionFieldKey,
   type NutritionProfile23,
+  type NutritionProfileMeta23,
 } from '@/lib/nutrition-profile';
+import {getDateKeyFromTimestamp, isDateKey} from '@/lib/log-date';
 
 export type FoodLogEntry = ParseFoodDescriptionOutput[number] & {
   id: string;
   timestamp: number;
+  loggedOn?: string;
   foodLogId?: string;
   draftBatchId?: string;
 };
 
-export const GOAL_FIELD_KEYS = [
-  'energyKcal',
-  'proteinGrams',
-  'carbohydrateGrams',
-  'fatGrams',
-  'fiberGrams',
-  'sodiumMg',
-  'calciumMg',
-  'ironMg',
-] as const;
+export type NutritionAggregate = {
+  profile: NutritionProfile23;
+  meta: NutritionProfileMeta23;
+};
 
-export type GoalFieldKey = (typeof GOAL_FIELD_KEYS)[number];
+export const GOAL_FIELD_KEYS = [...NUTRITION_PROFILE_KEYS] as NutritionFieldKey[];
 
-export interface MacroGoals extends Pick<NutritionProfile23, GoalFieldKey> {}
+export type GoalFieldKey = NutritionFieldKey;
+export type MacroGoals = Record<GoalFieldKey, number>;
 
 export const GOAL_FIELDS: Array<{
   key: GoalFieldKey;
   label: string;
   unit: string;
   tone: string;
-}> = [
-  {key: 'energyKcal', label: '热量', unit: 'kcal', tone: 'bg-orange-500'},
-  {key: 'proteinGrams', label: '蛋白质', unit: 'g', tone: 'bg-primary'},
-  {key: 'carbohydrateGrams', label: '碳水', unit: 'g', tone: 'bg-accent'},
-  {key: 'fatGrams', label: '脂肪', unit: 'g', tone: 'bg-yellow-500'},
-  {key: 'fiberGrams', label: '膳食纤维', unit: 'g', tone: 'bg-emerald-500'},
-  {key: 'sodiumMg', label: '钠上限', unit: 'mg', tone: 'bg-sky-500'},
-  {key: 'calciumMg', label: '钙', unit: 'mg', tone: 'bg-indigo-500'},
-  {key: 'ironMg', label: '铁', unit: 'mg', tone: 'bg-rose-500'},
-];
+  goalDirection: ReturnType<typeof getNutrientFieldMeta>['goalDirection'];
+}> = GOAL_FIELD_KEYS.map((key) => {
+  const meta = getNutrientFieldMeta(key);
+  return {
+    key,
+    label: meta.label,
+    unit: meta.unit,
+    tone: meta.tone,
+    goalDirection: meta.goalDirection,
+  };
+});
 
-export const DEFAULT_GOALS: MacroGoals = {
-  energyKcal: 2000,
-  proteinGrams: 120,
-  fatGrams: 65,
-  carbohydrateGrams: 225,
-  fiberGrams: 30,
-  sodiumMg: 2000,
-  calciumMg: 1000,
-  ironMg: 18,
-};
+export const GOAL_FIELD_GROUPS = NUTRIENT_GROUPS.map((group) => ({
+  ...group,
+  fields: group.fields.map((field) =>
+    GOAL_FIELDS.find((goalField) => goalField.key === field.key)!
+  ),
+}));
+
+export const DEFAULT_GOALS: MacroGoals = GOAL_FIELD_KEYS.reduce<MacroGoals>((acc, key) => {
+  acc[key] = getNutrientFieldMeta(key).defaultGoal;
+  return acc;
+}, {} as MacroGoals);
 
 export const ENTRY_STORAGE_KEY = 'macro_helper_entries_v3';
 export const GOAL_STORAGE_KEY = 'macro_helper_goals_v3';
@@ -79,15 +85,25 @@ export function updateFoodWeight<T extends ParseFoodDescriptionOutput[number]>(
     ...food,
     estimatedGrams: safeGrams,
     totals: scaleNutritionProfile(food.per100g, safeGrams),
+    totalsMeta: cloneNutritionProfileMeta(food.per100gMeta),
   };
 }
 
-export function sumEntryTotals(entries: FoodLogEntry[]): NutritionProfile23 {
-  return sumNutritionProfiles(entries.map((entry) => entry.totals));
+export function sumEntryTotals(entries: FoodLogEntry[]): NutritionAggregate {
+  return aggregateNutritionProfiles(
+    entries.map((entry) => ({
+      profile: entry.totals,
+      meta: entry.totalsMeta,
+    }))
+  );
 }
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isNullableNutritionNumber(value: unknown): value is number | null {
+  return value === null || isFiniteNumber(value);
 }
 
 function isGoalRecord(value: unknown): value is MacroGoals {
@@ -106,8 +122,23 @@ function isNutritionProfile(value: unknown): value is NutritionProfile23 {
   }
 
   return NUTRITION_PROFILE_KEYS.every((key) =>
-    isFiniteNumber((value as Record<string, number>)[key])
+    isNullableNutritionNumber((value as Record<string, number | null>)[key])
   );
+}
+
+function isNutritionProfileMeta(value: unknown): value is NutritionProfileMeta23 {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  return NUTRITION_PROFILE_KEYS.every((key) => {
+    const field = (value as Record<string, {status?: string; source?: string}>)[key];
+    return (
+      field &&
+      typeof field.status === 'string' &&
+      typeof field.source === 'string'
+    );
+  });
 }
 
 function isLegacyMacroShape(
@@ -124,7 +155,7 @@ function isLegacyMacroShape(
 
 function coerceNutritionProfile(value: unknown): NutritionProfile23 | null {
   if (isNutritionProfile(value)) {
-    return value;
+    return createNutritionProfile(value);
   }
 
   if (isLegacyMacroShape(value)) {
@@ -132,6 +163,47 @@ function coerceNutritionProfile(value: unknown): NutritionProfile23 | null {
   }
 
   return null;
+}
+
+function buildLegacyNutritionMeta(
+  profile: NutritionProfile23,
+  sourceKind: FoodLogEntry['sourceKind']
+): NutritionProfileMeta23 {
+  const knownSource = sourceKind === 'ai_fallback' ? 'ai' : 'database';
+  const knownStatus = sourceKind === 'ai_fallback' ? 'estimated' : 'measured';
+
+  return buildNutritionProfileMeta(
+    createNutritionProfile(
+      NUTRITION_PROFILE_KEYS.reduce<Partial<NutritionProfile23>>((acc, key) => {
+        const value = profile[key];
+        if (CORE_MACRO_KEYS.includes(key as (typeof CORE_MACRO_KEYS)[number])) {
+          acc[key] = value;
+          return acc;
+        }
+
+        acc[key] =
+          sourceKind === 'ai_fallback' || (value !== null && value > 0) ? value : null;
+        return acc;
+      }, {})
+    ),
+    {
+      knownStatus,
+      knownSource,
+      missingSource: knownSource,
+    }
+  );
+}
+
+function coerceNutritionProfileMeta(
+  value: unknown,
+  profile: NutritionProfile23,
+  sourceKind: FoodLogEntry['sourceKind']
+): NutritionProfileMeta23 {
+  if (isNutritionProfileMeta(value)) {
+    return value;
+  }
+
+  return buildLegacyNutritionMeta(profile, sourceKind);
 }
 
 export function isFoodLogEntryArray(value: unknown): value is FoodLogEntry[] {
@@ -144,7 +216,10 @@ export function isFoodLogEntryArray(value: unknown): value is FoodLogEntry[] {
       return false;
     }
 
-    const candidate = entry as FoodLogEntry;
+    const candidate = entry as FoodLogEntry & {
+      per100gMeta?: NutritionProfileMeta23;
+      totalsMeta?: NutritionProfileMeta23;
+    };
 
     return (
       typeof candidate.id === 'string' &&
@@ -160,6 +235,8 @@ export function isFoodLogEntryArray(value: unknown): value is FoodLogEntry[] {
       Array.isArray(candidate.validationFlags) &&
       Boolean(coerceNutritionProfile(candidate.per100g)) &&
       Boolean(coerceNutritionProfile(candidate.totals)) &&
+      (candidate.loggedOn === undefined ||
+        (typeof candidate.loggedOn === 'string' && isDateKey(candidate.loggedOn))) &&
       isFiniteNumber(candidate.timestamp)
     );
   });
@@ -174,30 +251,48 @@ export function coerceFoodLogEntryArray(value: unknown): FoodLogEntry[] | null {
     return null;
   }
 
-  return value.map((entry) => ({
-    ...entry,
-    per100g: coerceNutritionProfile(entry.per100g)!,
-    totals: coerceNutritionProfile(entry.totals)!,
-  }));
+  return value.map((entry) => {
+    const per100g = coerceNutritionProfile(entry.per100g)!;
+    const totals = coerceNutritionProfile(entry.totals)!;
+
+    return {
+      ...entry,
+      loggedOn:
+        typeof entry.loggedOn === 'string' && isDateKey(entry.loggedOn)
+          ? entry.loggedOn
+          : getDateKeyFromTimestamp(entry.timestamp),
+      per100g,
+      totals,
+      per100gMeta: coerceNutritionProfileMeta(
+        (entry as FoodLogEntry & {per100gMeta?: NutritionProfileMeta23}).per100gMeta,
+        per100g,
+        entry.sourceKind
+      ),
+      totalsMeta: coerceNutritionProfileMeta(
+        (entry as FoodLogEntry & {totalsMeta?: NutritionProfileMeta23}).totalsMeta,
+        totals,
+        entry.sourceKind
+      ),
+    };
+  });
 }
 
 export function coerceMacroGoals(value: unknown): MacroGoals | null {
-  if (isGoalRecord(value)) {
-    return value;
-  }
-
   if (!value || typeof value !== 'object') {
     return null;
   }
 
-  if (!isLegacyMacroShape(value)) {
+  const candidate = value as Record<string, unknown>;
+  const hasAnyGoalValue =
+    GOAL_FIELD_KEYS.some((key) => isFiniteNumber(candidate[key])) || isLegacyMacroShape(value);
+  if (!hasAnyGoalValue) {
     return null;
   }
 
   return GOAL_FIELD_KEYS.reduce<MacroGoals>(
     (acc, key) => {
-      acc[key] = isFiniteNumber((value as Record<string, number>)[key])
-        ? (value as Record<string, number>)[key]
+      acc[key] = isFiniteNumber(candidate[key])
+        ? (candidate[key] as number)
         : DEFAULT_GOALS[key];
       return acc;
     },

@@ -1,3 +1,5 @@
+import {recordAiUsageTelemetry} from '@/lib/ai-usage-telemetry';
+import {buildNutritionProfileMeta} from '@/lib/nutrition-profile';
 import {
   AiParsedFoodItemsSchema,
   type AiParsedFoodItem,
@@ -26,6 +28,10 @@ const SYSTEM_PROMPT = `
 - 只返回 JSON 数组，不要解释，不要 Markdown。
 - estimatedGrams 必须是每个条目这次总摄入重量，不是单个重量。
 - quantityDescription 保留关键量词；没有明确数量时写“未知”。
+- 看到“一个 / 一碗 / 一杯 / 一份 / 一盘 / 一片”时，estimatedGrams 必须参考常见成品份量：
+  一个鸡蛋约 50g；一碗熟米饭约 180g；一杯豆浆约 300g；一份炒饭/盖饭约 300-400g；
+  一碗汤面约 350-500g；一片披萨约 100-150g；一份蛋糕约 80-120g。
+- 没有明确重量依据时，不要把“一碗面”估成 200g 或 500g 这种极端值；拿不准就给中间常见值，并降低 confidence。
 - fallbackPer100g 必须包含以下 23 项字段：
   energyKcal、proteinGrams、carbohydrateGrams、fatGrams、
   fiberGrams、sugarsGrams、
@@ -33,6 +39,7 @@ const SYSTEM_PROMPT = `
   vitaminAMcg、vitaminCMg、vitaminDMcg、vitaminEMg、vitaminKMcg、
   thiaminMg、riboflavinMg、niacinMg、vitaminB6Mg、vitaminB12Mcg、folateMcg。
 - 对微量营养素没有把握时，优先给出保守、常见、不过度极端的估计；不要编造特别高的 vitaminD、vitaminK、folate 等数值。
+- 对植物性蔬菜、水果、米饭、面、面包等食物，vitaminB12 和 vitaminD 通常接近 0；没有明确强化或动物性来源证据时，不要给出显著数值。
 - 一句话里有多个食物时拆成多个元素。
 - 如果用户说的是复合菜，直接输出拆解后的组成项，不要先输出整道菜再让后端二次拆。
 - 像“火腿蛋炒饭”这类食物，通常应拆为“米饭 + 鸡蛋 + 火腿肠/火腿 + 少量蔬菜或油”；不要把整道菜误判成单一“火腿”。
@@ -146,6 +153,11 @@ type GeminiResponse = {
   error?: {
     message?: string;
   };
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
 };
 
 type CandidateValidationIssue = {
@@ -224,8 +236,16 @@ async function requestGeminiJsonArray(
   systemPrompt: string,
   maxOutputTokens: number
 ): Promise<AiParsedFoodItem[]> {
+  const startedAt = Date.now();
   let lastError: unknown;
   let retryPromptSuffix = '';
+  let lastUsageMetadata:
+    | {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        totalTokenCount?: number;
+      }
+    | undefined;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
@@ -273,6 +293,7 @@ async function requestGeminiJsonArray(
       }
 
       const payload = (await response.json()) as GeminiResponse;
+      lastUsageMetadata = payload.usageMetadata ?? lastUsageMetadata;
       if (payload.error?.message) {
         throw new Error(payload.error.message);
       }
@@ -282,15 +303,46 @@ async function requestGeminiJsonArray(
       const parsedItems = AiParsedFoodItemsSchema.parse(jsonPayload);
       const issues = validateParsedItems(parsedItems);
       if (!issues.length) {
-        return parsedItems.map((item) => ({
+        const result = parsedItems.map((item) => ({
           ...item,
+          fallbackPer100gMeta: buildNutritionProfileMeta(item.fallbackPer100g, {
+            knownStatus: 'estimated',
+            knownSource: 'ai',
+            missingSource: 'ai',
+          }),
           fallbackAdjusted: false,
           fallbackValidationIssues: [],
         }));
+        await recordAiUsageTelemetry({
+          provider: 'gemini',
+          model: getGeminiModel(),
+          requestKind: 'parse_food_candidates',
+          inputPreview: prompt.slice(0, 220),
+          promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
+          completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
+          totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+          durationMs: Date.now() - startedAt,
+          attemptCount: attempt,
+          success: true,
+        });
+        return result;
       }
 
       if (attempt === MAX_ATTEMPTS) {
-        return sanitizeInvalidFallbackProfiles(parsedItems);
+        const result = sanitizeInvalidFallbackProfiles(parsedItems);
+        await recordAiUsageTelemetry({
+          provider: 'gemini',
+          model: getGeminiModel(),
+          requestKind: 'parse_food_candidates',
+          inputPreview: prompt.slice(0, 220),
+          promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
+          completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
+          totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+          durationMs: Date.now() - startedAt,
+          attemptCount: attempt,
+          success: true,
+        });
+        return result;
       }
 
       retryPromptSuffix = `\n\n上一次返回的 fallbackPer100g 不可信，请修正以下问题后重新返回完整 JSON：\n${formatValidationIssues(issues)}`;
@@ -313,9 +365,35 @@ async function requestGeminiJsonArray(
   }
 
   if (lastError instanceof Error && lastError.name === 'AbortError') {
+    await recordAiUsageTelemetry({
+      provider: 'gemini',
+      model: getGeminiModel(),
+      requestKind: 'parse_food_candidates',
+      inputPreview: prompt.slice(0, 220),
+      promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
+      completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
+      totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+      durationMs: Date.now() - startedAt,
+      attemptCount: MAX_ATTEMPTS,
+      success: false,
+      errorMessage: 'Gemini request timed out.',
+    });
     throw new Error('Gemini request timed out. Please try again in a moment.');
   }
 
+  await recordAiUsageTelemetry({
+    provider: 'gemini',
+    model: getGeminiModel(),
+    requestKind: 'parse_food_candidates',
+    inputPreview: prompt.slice(0, 220),
+    promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
+    completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
+    totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+    durationMs: Date.now() - startedAt,
+    attemptCount: MAX_ATTEMPTS,
+    success: false,
+    errorMessage: lastError instanceof Error ? lastError.message : 'Gemini request failed.',
+  });
   throw lastError instanceof Error ? lastError : new Error('Gemini request failed.');
 }
 
@@ -351,6 +429,11 @@ function sanitizeInvalidFallbackProfiles(items: AiParsedFoodItem[]): AiParsedFoo
     if (!sanitized.issues.length) {
       return {
         ...item,
+        fallbackPer100gMeta: buildNutritionProfileMeta(item.fallbackPer100g, {
+          knownStatus: 'estimated',
+          knownSource: 'ai',
+          missingSource: 'ai',
+        }),
         fallbackAdjusted: false,
         fallbackValidationIssues: [],
       };
@@ -360,6 +443,11 @@ function sanitizeInvalidFallbackProfiles(items: AiParsedFoodItem[]): AiParsedFoo
       ...item,
       confidence: Math.min(item.confidence, 0.45),
       fallbackPer100g: sanitized.profile,
+      fallbackPer100gMeta: buildNutritionProfileMeta(sanitized.profile, {
+        knownStatus: 'estimated',
+        knownSource: 'ai',
+        missingSource: 'ai',
+      }),
       fallbackAdjusted: sanitized.adjusted,
       fallbackValidationIssues: sanitized.remainingIssues,
     };

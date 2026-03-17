@@ -10,38 +10,59 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql)
 ![AI](https://img.shields.io/badge/AI-Enabled-brightgreen?style=flat-square)
 
-This project is a modern full-stack diet tracking and nutrition analysis application. Combining intuitive data visualization with the semantic analysis power of Large Language Models (LLMs), the system assists users in precisely managing daily nutritional intake through data-driven methods to achieve muscle gain or fat loss goals.
+An intelligent full-stack diet tracking and nutrition analysis application. It combines intuitive data visualization with Large Language Model (LLM) semantic analysis to simplify daily nutrition logging and provide precise dietary feedback for fitness and health goals.
 
-## Core Engineering Highlights
+## 🏛️ Engineering & Technical Analysis
 
-### 1. Multi-dimensional Nutrition Data Visualization
-Integrated dynamic statistical modules powered by **Recharts**:
-- **Real-time Dashboard**: Dynamically renders doughnut charts for daily protein, carbohydrate, and fat intake ratios.
-- **Trend Analysis**: Provides line charts correlating calorie intake with weight fluctuations, assisting users in periodic reviews.
+### 1. Modern Full-stack Architecture
+- **Next.js 15 (App Router)**: The core routing logic is built on Next.js 15. By leveraging Server Components, we offload complex database queries to the server, significantly reducing client-side JS execution overhead.
+- **React 19 Concurrent Mode**: Utilizing the latest React 19 features, the system maintains high interface responsiveness even during frequent interactions like chart rendering and form validation.
 
-### 2. AI-Powered Interaction Experiments
-The system introduces AI modules to optimize the often tedious process of traditional diet logging:
-- **Unstructured Input**: Allows users to enter natural language (e.g., "ate a Big Mac and a small fries for lunch") and automatically decomposes nutritional components.
-- **Intelligent Strategy Generation**: Dynamically provides dietary optimization suggestions based on the user's historical intake data and fitness goals.
+### 2. AI-Powered Ingestion Pipeline
+Traditional logging systems require manual food searches, which is often inefficient. This project introduces an **AI Semantic Parser**:
+- **Logic Flow**: Natural language input -> Backend AI parser identifies food items and approximate quantities -> Calorie and macronutrient estimation based on built-in DBs or LLM knowledge.
+- **Prompt Engineering**: Located in `src/ai`, our system prompts are meticulously designed for standardized and high-accuracy nutritional decomposition.
 
-### 3. Type-Safe Engineering Practices
-- **End-to-End Validation**: Combines Zod and React Hook Form to implement dual schema validation at both the client-side and API endpoints, ensuring high accuracy of intake data.
-- **Persistence Management**: Maintains user profiles and recipe libraries based on PostgreSQL, utilizing indexes to optimize paginated queries of historical records.
+### 3. Data Visualization Engineering
+Integrated **Recharts** for real-time monitoring dashboards:
+- **Macronutrient Dashboard**: Doughnut charts (Pie Charts) provide real-time feedback on daily intake ratios, guiding users towards balanced nutrition.
+- **Dynamic Trend Analysis**: Smooth line charts correlate intake with weight fluctuations, supporting dynamic time-range filtering.
 
-## Project Structure
+## 📂 Core Directory Structure
 
 ```text
 fitness-food/
 ├── src/
-│   ├── ai/             # Core AI analysis engine and prompt templates
-│   ├── app/            # Next.js 15 App Router pages and API endpoints
-│   ├── components/     # UI primitives, business dashboards, and interactive charts
-│   ├── hooks/          # Data flow management and state persistence logic
-│   └── lib/            # DB client encapsulation and utility library
-├── db/                 # SQL initialization scripts and schema definitions
-├── deploy/             # Configuration files for environmental orchestration
-└── package.json        # Dependency list and project life-cycle definitions
+│   ├── ai/             # Core AI logic, prompt templates, and data normalization
+│   ├── app/            # Next.js 15 pages, layouts, and strongly-typed API endpoints
+│   ├── components/     # UI primitives, business dashboards, and Recharts wrappers
+│   ├── lib/            # Edge-optimized DB connection pools and core utilities
+│   └── hooks/          # Data flow, SWR synchronization, and state persistence
+├── db/                 # SQL initialization, schema definitions, and seed data
+├── deploy/             # Environmental orchestration for rapid deployment
+└── package.json        # Comprehensive dependency and lifecycle management
+```
+
+## 🚀 Quick Start for Developers
+
+### 1. Requirements
+- Node.js >= 20
+- PostgreSQL >= 16
+
+### 2. Deployment
+```bash
+# Install dependencies
+npm install
+
+# Configure .env.local
+# DATABASE_URL=postgresql://user:password@localhost:5432/fitness_food
+
+# Initialize Database Schema
+npm run db:setup
+
+# Launch High-Performance Dev Environment
+npm run dev
 ```
 
 ## License
-This project is licensed under the MIT License.
+MIT License

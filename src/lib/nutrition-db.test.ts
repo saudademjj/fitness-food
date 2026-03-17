@@ -166,3 +166,24 @@ databaseTest('lookupNutritionByNameExact allows preview rows for exact alias hit
     assert.equal(result.matchMode, 'exact');
   }
 });
+
+databaseTest('lookupNutritionByNameExact resolves protein powder through the seeded alias', async () => {
+  const result = await lookupNutritionByNameExact('蛋白粉');
+
+  assert.ok(result);
+  assert.equal(result?.sourceKind, 'catalog');
+  assert.equal(result?.matchMode, 'exact');
+  assert.ok((result?.per100g.proteinGrams ?? 0) >= 70);
+});
+
+databaseTest('lookupNutritionByNameExact resolves 麦旋风 through the seeded Chinese alias', async () => {
+  const result = await lookupNutritionByNameExact('麦旋风');
+
+  assert.ok(result);
+  assert.equal(result?.sourceKind, 'catalog');
+  assert.equal(result?.matchMode, 'exact');
+  assert.ok(
+    (result?.matchedName ?? '').includes('麦旋风') ||
+      (result?.matchedName ?? '').toLowerCase().includes('mcflurry')
+  );
+});

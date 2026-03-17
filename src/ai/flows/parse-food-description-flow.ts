@@ -559,9 +559,7 @@ async function resolveDescriptionSegment(
     extractWholeDishCandidate(description) ??
     (() => {
       const candidate = extractSingleFoodCandidate(description);
-      return candidate?.foodName && COMPOSITE_FOOD_PATTERN.test(candidate.foodName)
-        ? candidate
-        : null;
+      return candidate?.foodName ? candidate : null;
     })();
   const wholeDishMatch = wholeDishCandidate?.foodName
     ? await lookupResolver(wholeDishCandidate.foodName, {

@@ -102,9 +102,8 @@ const EXACT_LOOKUP_READY_FILTER = `
   (
     ac.publish_ready = TRUE
     OR (
-      COALESCE(ac.completeness_ratio, 0) >= 0.6
-      AND COALESCE(ac.macro_present_count, 0) = 4
-      AND COALESCE(ac.measured_nutrient_count, 0) >= 12
+      COALESCE(ac.macro_present_count, 0) = 4
+      AND COALESCE(ac.measured_nutrient_count, 0) >= 4
     )
   )
 `;
@@ -113,9 +112,9 @@ const FUZZY_LOOKUP_READY_FILTER = `
   (
     ac.publish_ready = TRUE
     OR (
-      COALESCE(ac.completeness_ratio, 0) >= 0.82
+      COALESCE(ac.completeness_ratio, 0) >= 0.4
       AND COALESCE(ac.macro_present_count, 0) = 4
-      AND COALESCE(ac.measured_nutrient_count, 0) >= 18
+      AND COALESCE(ac.measured_nutrient_count, 0) >= 6
     )
   )
 `;
@@ -516,6 +515,7 @@ async function lookupRecipeAliasFuzzy(normalizedName: string, threshold: number)
       WHERE ra.language_code IN ('zh', 'en')
         AND (${CORE_MACRO_FILTER})
         AND (${FUZZY_LOOKUP_READY_FILTER})
+        AND ra.normalized_alias % $1
         AND similarity(ra.normalized_alias, $1) >= $2
       ORDER BY
         ac.publish_ready DESC,
@@ -541,6 +541,7 @@ async function lookupCanonicalAliasFuzzy(normalizedName: string, threshold: numb
       WHERE cfa.language_code IN ('zh', 'en')
         AND (${CORE_MACRO_FILTER})
         AND (${FUZZY_LOOKUP_READY_FILTER})
+        AND cfa.normalized_alias % $1
         AND similarity(cfa.normalized_alias, $1) >= $2
       ORDER BY
         ac.publish_ready DESC,
@@ -561,6 +562,7 @@ async function lookupCatalogFuzzy(normalizedName: string, threshold: number) {
       FROM core.app_catalog_profile_23 ac
       WHERE (${CORE_MACRO_FILTER})
         AND (${FUZZY_LOOKUP_READY_FILTER})
+        AND regexp_replace(lower(COALESCE(ac.food_name_zh, '')), '\s+', '', 'g') % $1
         AND similarity(regexp_replace(lower(COALESCE(ac.food_name_zh, '')), '\s+', '', 'g'), $1) >= $2
       ORDER BY
         CASE WHEN ac.entity_type = 'recipe' THEN 0 ELSE 1 END,
@@ -584,7 +586,7 @@ function getFuzzyThreshold(
   }
 
   if (length === 2) {
-    return strategyKind === 'alias' ? 0.82 : 0.92;
+    return strategyKind === 'alias' ? 0.65 : 0.75;
   }
 
   if (length <= 4) {
@@ -748,7 +750,7 @@ async function lookupNutritionByNameInternal(
         return mapRowToLookupResult(exactMatch, 'exact');
       }
 
-      if (!allowFuzzy || normalizedName.length <= 2) {
+      if (!allowFuzzy || normalizedName.length < 2) {
         return null;
       }
 

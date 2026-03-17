@@ -78,7 +78,7 @@ export async function tryResolveDirectDescription(
   }
 
   const dbMatch = await lookupResolver(foodName, {
-    allowFuzzy: !COMPOSITE_FOOD_PATTERN.test(foodName),
+    allowFuzzy: true,
   });
   if (!dbMatch) {
     return null;

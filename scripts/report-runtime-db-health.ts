@@ -15,8 +15,15 @@ type SummaryRow = {
   portion_reference_foods: number;
   app_catalog_publish_ready: number;
   app_catalog_total: number;
+  app_catalog_macro_complete: number;
+  app_catalog_preview_macro_complete: number;
+  app_catalog_exact_lookup_ready: number;
+  app_catalog_fuzzy_lookup_ready: number;
   app_recipe_publish_ready: number;
   app_recipe_total: number;
+  app_recipe_macro_complete: number;
+  app_recipe_exact_lookup_ready: number;
+  app_recipe_fuzzy_lookup_ready: number;
 };
 
 async function queryNamedCounts(
@@ -48,10 +55,97 @@ async function main(): Promise<void> {
       (SELECT COUNT(*)::int FROM core.app_catalog_profile_23) AS app_catalog_total,
       (
         SELECT COUNT(*)::int
+        FROM core.app_catalog_profile_23
+        WHERE COALESCE(energy_kcal_is_present, FALSE)
+          AND COALESCE(protein_grams_is_present, FALSE)
+          AND COALESCE(carbohydrate_grams_is_present, FALSE)
+          AND COALESCE(fat_grams_is_present, FALSE)
+      ) AS app_catalog_macro_complete,
+      (
+        SELECT COUNT(*)::int
+        FROM core.app_catalog_profile_23
+        WHERE NOT publish_ready
+          AND COALESCE(energy_kcal_is_present, FALSE)
+          AND COALESCE(protein_grams_is_present, FALSE)
+          AND COALESCE(carbohydrate_grams_is_present, FALSE)
+          AND COALESCE(fat_grams_is_present, FALSE)
+      ) AS app_catalog_preview_macro_complete,
+      (
+        SELECT COUNT(*)::int
+        FROM core.app_catalog_profile_23
+        WHERE COALESCE(energy_kcal_is_present, FALSE)
+          AND COALESCE(protein_grams_is_present, FALSE)
+          AND COALESCE(carbohydrate_grams_is_present, FALSE)
+          AND COALESCE(fat_grams_is_present, FALSE)
+          AND (
+            publish_ready
+            OR (
+              COALESCE(macro_present_count, 0) = 4
+              AND COALESCE(measured_nutrient_count, 0) >= 4
+            )
+          )
+      ) AS app_catalog_exact_lookup_ready,
+      (
+        SELECT COUNT(*)::int
+        FROM core.app_catalog_profile_23
+        WHERE COALESCE(energy_kcal_is_present, FALSE)
+          AND COALESCE(protein_grams_is_present, FALSE)
+          AND COALESCE(carbohydrate_grams_is_present, FALSE)
+          AND COALESCE(fat_grams_is_present, FALSE)
+          AND (
+            publish_ready
+            OR (
+              COALESCE(completeness_ratio, 0) >= 0.4
+              AND COALESCE(macro_present_count, 0) = 4
+              AND COALESCE(measured_nutrient_count, 0) >= 6
+            )
+          )
+      ) AS app_catalog_fuzzy_lookup_ready,
+      (
+        SELECT COUNT(*)::int
         FROM core.app_recipe_profile_23
         WHERE publish_ready
       ) AS app_recipe_publish_ready,
-      (SELECT COUNT(*)::int FROM core.app_recipe_profile_23) AS app_recipe_total
+      (SELECT COUNT(*)::int FROM core.app_recipe_profile_23) AS app_recipe_total,
+      (
+        SELECT COUNT(*)::int
+        FROM core.app_recipe_profile_23
+        WHERE COALESCE(energy_kcal_is_present, FALSE)
+          AND COALESCE(protein_grams_is_present, FALSE)
+          AND COALESCE(carbohydrate_grams_is_present, FALSE)
+          AND COALESCE(fat_grams_is_present, FALSE)
+      ) AS app_recipe_macro_complete,
+      (
+        SELECT COUNT(*)::int
+        FROM core.app_recipe_profile_23
+        WHERE COALESCE(energy_kcal_is_present, FALSE)
+          AND COALESCE(protein_grams_is_present, FALSE)
+          AND COALESCE(carbohydrate_grams_is_present, FALSE)
+          AND COALESCE(fat_grams_is_present, FALSE)
+          AND (
+            publish_ready
+            OR (
+              COALESCE(macro_present_count, 0) = 4
+              AND COALESCE(measured_nutrient_count, 0) >= 4
+            )
+          )
+      ) AS app_recipe_exact_lookup_ready,
+      (
+        SELECT COUNT(*)::int
+        FROM core.app_recipe_profile_23
+        WHERE COALESCE(energy_kcal_is_present, FALSE)
+          AND COALESCE(protein_grams_is_present, FALSE)
+          AND COALESCE(carbohydrate_grams_is_present, FALSE)
+          AND COALESCE(fat_grams_is_present, FALSE)
+          AND (
+            publish_ready
+            OR (
+              COALESCE(completeness_ratio, 0) >= 0.4
+              AND COALESCE(macro_present_count, 0) = 4
+              AND COALESCE(measured_nutrient_count, 0) >= 6
+            )
+          )
+      ) AS app_recipe_fuzzy_lookup_ready
   `);
 
   const summary = summaryResult.rows[0];
@@ -87,8 +181,15 @@ async function main(): Promise<void> {
       portionReferenceDistinctFoods: Number(summary.portion_reference_foods ?? 0),
       appCatalogPublishReady: Number(summary.app_catalog_publish_ready ?? 0),
       appCatalogTotal: Number(summary.app_catalog_total ?? 0),
+      appCatalogMacroComplete: Number(summary.app_catalog_macro_complete ?? 0),
+      appCatalogPreviewMacroComplete: Number(summary.app_catalog_preview_macro_complete ?? 0),
+      appCatalogExactLookupReady: Number(summary.app_catalog_exact_lookup_ready ?? 0),
+      appCatalogFuzzyLookupReady: Number(summary.app_catalog_fuzzy_lookup_ready ?? 0),
       appRecipePublishReady: Number(summary.app_recipe_publish_ready ?? 0),
       appRecipeTotal: Number(summary.app_recipe_total ?? 0),
+      appRecipeMacroComplete: Number(summary.app_recipe_macro_complete ?? 0),
+      appRecipeExactLookupReady: Number(summary.app_recipe_exact_lookup_ready ?? 0),
+      appRecipeFuzzyLookupReady: Number(summary.app_recipe_fuzzy_lookup_ready ?? 0),
     },
     portionSources,
     recentLookupMisses: lookupMisses,

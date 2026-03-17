@@ -1,6 +1,6 @@
 # Fitness Food
 
-[中文说明](./README.md)
+English | [简体中文](README.md)
 
 `Fitness Food` is a Chinese nutrition logging app built with `Next.js 15`. The current version uses a database-first nutrition pipeline: simple food phrases are resolved directly from PostgreSQL whenever possible, while `Gemini 3 Flash Preview` is only used for complex descriptions, default portion estimation, and controlled fallback nutrition estimates.
 

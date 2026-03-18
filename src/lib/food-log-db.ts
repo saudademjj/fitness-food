@@ -1,4 +1,4 @@
-import type {ParseFoodDescriptionOutput, ValidationFlag} from '@/lib/food-contract';
+import type {ResolvedFoodItem, ResolvedFoodItems, ValidationFlag} from '@/lib/food-contract';
 import type {FoodLogEntry} from '@/components/macro-calculator/types';
 import {getDbPool} from '@/lib/db';
 import {
@@ -22,9 +22,9 @@ type FoodLogItemRow = {
   quantity_description: string;
   estimated_grams: number;
   confidence: number;
-  source_kind: 'recipe' | 'catalog' | 'ai_fallback';
+  source_kind: 'recipe' | 'catalog' | 'ai_fallback' | 'runtime_composite';
   source_label: string;
-  match_mode: 'exact' | 'fuzzy' | 'ai_fallback';
+  match_mode: 'exact' | 'fuzzy' | 'ai_fallback' | 'runtime_ingredients';
   source_status: 'published' | 'preview';
   amount_basis_g: number;
   validation_flags: string[] | null;
@@ -173,7 +173,7 @@ export async function listFoodLogEntries(userId: string, date?: string): Promise
 
 export async function createFoodLog(
   userId: string,
-  foods: ParseFoodDescriptionOutput,
+  foods: ResolvedFoodItems,
   sourceDescription?: string | null,
   eatenAt?: number,
   eatenOn?: string
@@ -312,7 +312,7 @@ export async function createFoodLog(
 export async function updateFoodLogItem(
   userId: string,
   itemId: string,
-  food: ParseFoodDescriptionOutput[number]
+  food: ResolvedFoodItem
 ): Promise<FoodLogEntry> {
   const pool = getDbPool();
   const [energyKcal, proteinGrams, carbohydrateGrams, fatGrams] = buildLegacyCoreValues(
@@ -540,7 +540,7 @@ export async function migrateLocalDraftEntries(
 
   let migrated = 0;
   for (const group of grouped.values()) {
-    const foods: ParseFoodDescriptionOutput = group.map((entry) => ({
+    const foods: ResolvedFoodItems = group.map((entry) => ({
       foodName: entry.foodName,
       quantityDescription: entry.quantityDescription,
       estimatedGrams: entry.estimatedGrams,

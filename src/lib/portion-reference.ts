@@ -11,6 +11,7 @@ import {
   type NutritionProfileMeta23,
 } from '@/lib/nutrition-profile';
 import {getRuntimeLookupVersion} from '@/lib/runtime-cache-version';
+import {recordRuntimeError} from '@/lib/runtime-observability';
 import type {ValidationFlag} from '@/lib/validation';
 import {getNutritionCategory, type NutritionCategory} from '@/lib/validation';
 
@@ -26,6 +27,9 @@ type PortionReferenceRow = {
   reference_source: string;
   notes: string | null;
   priority: number;
+};
+type PortionKeywordRow = PortionReferenceRow & {
+  matched_keyword: string;
 };
 
 type PortionModifiers = {
@@ -71,6 +75,7 @@ export type PortionLookupResult = {
 
 const PORTION_LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
 const PORTION_LOOKUP_CACHE_MAX_SIZE = 512;
+const EXACT_MATCH_ONLY_KEYWORDS = new Set(['粉', '面', '饭', '饼', '汤', '羹', '粥']);
 
 const DEFAULT_SIZE_MULTIPLIERS: Record<string, number> = {
   小: 0.75,
@@ -506,6 +511,25 @@ const FORM_FACTOR_FALLBACK_RULES: Array<{
     },
   },
   {
+    pattern: /(麦乐鸡|mcnugget)/i,
+    heuristic: {
+      defaultGrams: 80,
+      confidenceScore: 0.82,
+      units: {份: 80, 块: 16, 个: 16},
+      notes: '按麦当劳中国 5 块麦乐鸡默认规格估重。',
+    },
+  },
+  {
+    pattern: /(鸡块|nugget)/i,
+    heuristic: {
+      defaultGrams: 120,
+      confidenceScore: 0.68,
+      units: {份: 120, 块: 30, 个: 30},
+      preparationMultipliers: {炸: 0.9},
+      notes: '按常见无骨鸡块/鸡米花的较保守单块份量估重。',
+    },
+  },
+  {
     pattern: /(薯条|鸡块|炸鸡|炸物)/i,
     heuristic: {
       defaultGrams: 110,
@@ -664,9 +688,9 @@ async function queryExactPortion(normalizedName: string): Promise<PortionReferen
   return result.rows[0] ?? null;
 }
 
-async function queryKeywordPortion(normalizedName: string): Promise<PortionReferenceRow | null> {
+async function queryKeywordPortion(normalizedName: string): Promise<PortionKeywordRow[]> {
   const pool = getDbPool();
-  const result = await pool.query<PortionReferenceRow>(
+  const result = await pool.query<PortionKeywordRow>(
     `
       SELECT
         pr.food_name_zh,
@@ -679,16 +703,81 @@ async function queryKeywordPortion(normalizedName: string): Promise<PortionRefer
         pr.confidence_score,
         pr.reference_source,
         pr.notes,
-        pr.priority
+        pr.priority,
+        keyword.keyword AS matched_keyword
       FROM core.portion_reference pr
       JOIN LATERAL unnest(pr.keyword_patterns) keyword(keyword)
         ON position(keyword.keyword in $1) > 0
       ORDER BY pr.priority ASC, char_length(keyword.keyword) DESC
-      LIMIT 1
+      LIMIT 8
     `,
     [normalizedName]
   );
-  return result.rows[0] ?? null;
+  return result.rows;
+}
+
+function isSafeKeywordPortionMatch(normalizedName: string, keyword: string): boolean {
+  const normalizedKeyword = normalizeLookupText(keyword);
+  if (!normalizedName || !normalizedKeyword) {
+    return false;
+  }
+
+  if (normalizedName === normalizedKeyword) {
+    return true;
+  }
+
+  if (normalizedKeyword.length < 2) {
+    return false;
+  }
+
+  if (EXACT_MATCH_ONLY_KEYWORDS.has(normalizedKeyword)) {
+    return false;
+  }
+
+  return (
+    normalizedName.startsWith(normalizedKeyword) ||
+    normalizedName.endsWith(normalizedKeyword)
+  );
+}
+
+function shouldUseMatchedNameForPortionLookup(
+  foodName: string,
+  matchedName?: string | null
+): boolean {
+  if (!matchedName?.trim()) {
+    return false;
+  }
+
+  const normalizedFoodName = normalizeLookupText(
+    extractPortionModifiers(foodName).baseName || foodName
+  );
+  const normalizedMatchedName = normalizeLookupText(
+    extractPortionModifiers(matchedName).baseName || matchedName
+  );
+
+  if (!normalizedFoodName || !normalizedMatchedName) {
+    return false;
+  }
+
+  if (normalizedFoodName === normalizedMatchedName) {
+    return true;
+  }
+
+  if (normalizedFoodName.length <= 2 || normalizedMatchedName.length <= 2) {
+    return false;
+  }
+
+  if (
+    normalizedMatchedName.includes(normalizedFoodName) ||
+    normalizedFoodName.includes(normalizedMatchedName)
+  ) {
+    return (
+      Math.abs(normalizedMatchedName.length - normalizedFoodName.length) <=
+      Math.max(2, Math.floor(Math.min(normalizedMatchedName.length, normalizedFoodName.length) / 2))
+    );
+  }
+
+  return false;
 }
 
 function getFallbackProfile(foodName: string): PortionLookupResult | null {
@@ -757,7 +846,10 @@ export async function lookupPortionReference(
   foodName: string,
   matchedName?: string | null
 ): Promise<PortionLookupResult | null> {
-  const candidateNames = [foodName, matchedName ?? '']
+  const candidateNames = [
+    foodName,
+    shouldUseMatchedNameForPortionLookup(foodName, matchedName) ? matchedName ?? '' : '',
+  ]
     .map((value) => value.trim())
     .filter(Boolean);
 
@@ -788,15 +880,32 @@ export async function lookupPortionReference(
       const keywordRows = await Promise.all(
         normalizedCandidates.map((candidate) => queryKeywordPortion(candidate))
       );
-      const keyword = keywordRows.find((row) => row !== null);
+      const keyword = keywordRows
+        .flatMap((rows, index) =>
+          rows.map((row) => ({
+            row,
+            normalizedCandidate: normalizedCandidates[index] ?? '',
+          }))
+        )
+        .find((candidate) =>
+          isSafeKeywordPortionMatch(candidate.normalizedCandidate, candidate.row.matched_keyword)
+        )?.row;
       if (keyword) {
         return parseRow(keyword, 'keyword');
       }
     } catch (error) {
-      console.warn(
-        'portion_reference lookup failed, falling back to in-app heuristic estimation.',
-        error
-      );
+      await recordRuntimeError({
+        scope: 'portion_reference.lookup',
+        code: 'lookup_failed',
+        message:
+          error instanceof Error
+            ? error.message
+            : 'portion_reference lookup failed, falling back to in-app heuristic estimation.',
+        context: {
+          foodName,
+          matchedName: matchedName ?? null,
+        },
+      });
     }
 
     return getFallbackProfile(matchedName ?? foodName);

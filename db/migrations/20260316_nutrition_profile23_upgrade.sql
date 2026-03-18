@@ -197,10 +197,15 @@ FROM candidate_rows
 WHERE default_grams IS NOT NULL
 ON CONFLICT (normalized_name_zh) DO UPDATE
 SET
+  food_name_zh = EXCLUDED.food_name_zh,
+  default_grams = EXCLUDED.default_grams,
   unit_grams = EXCLUDED.unit_grams,
+  keyword_patterns = EXCLUDED.keyword_patterns,
   size_multipliers = EXCLUDED.size_multipliers,
   preparation_multipliers = EXCLUDED.preparation_multipliers,
   density_g_per_ml = EXCLUDED.density_g_per_ml,
+  reference_source = EXCLUDED.reference_source,
+  notes = EXCLUDED.notes,
   confidence_score = GREATEST(core.portion_reference.confidence_score, EXCLUDED.confidence_score),
   updated_at = NOW()
 WHERE core.portion_reference.priority >= 60;

@@ -41,6 +41,9 @@ export const ValidationFlagSchema = z.enum([
   'ai_macro_estimate',
   'ai_macro_clamped',
   'db_lookup_miss',
+  'db_candidate_rejected',
+  'db_candidate_thermodynamic_mismatch',
+  'brand_curated_override',
   'portion_reference_applied',
   'portion_keyword_applied',
   'portion_fallback_applied',
@@ -49,6 +52,10 @@ export const ValidationFlagSchema = z.enum([
   'composite_total_rebalanced',
   'whole_dish_db_override',
   'whole_dish_component_aligned',
+  'runtime_recipe_ingredients',
+  'runtime_ai_ingredients',
+  'ingredient_ai_macro_estimate',
+  'ingredient_reference_micros_merged',
   'low_confidence',
   'ai_macro_unverified',
   'db_micronutrient_gap',
@@ -57,7 +64,12 @@ export const ValidationFlagSchema = z.enum([
   'nutrition_unknown',
 ]);
 
-export const MatchModeSchema = z.enum(['exact', 'fuzzy', 'ai_fallback']);
+export const MatchModeSchema = z.enum([
+  'exact',
+  'fuzzy',
+  'ai_fallback',
+  'runtime_ingredients',
+]);
 export const SourceStatusSchema = z.enum(['published', 'preview']);
 
 export const ParseFoodDescriptionInputSchema = z.object({
@@ -81,12 +93,35 @@ export const AiParsedFoodItemSchema = z.object({
 
 export const AiParsedFoodItemsSchema = z.array(AiParsedFoodItemSchema).min(1);
 
+const MacroOnlyProfileSchema = NutritionProfile23Schema.pick({
+  energyKcal: true,
+  proteinGrams: true,
+  carbohydrateGrams: true,
+  fatGrams: true,
+});
+
+export const AiCompositeDishIngredientSchema = z.object({
+  ingredientName: z.string().trim().min(1),
+  estimatedGrams: z.coerce.number().positive(),
+  confidence: z.coerce.number().min(0).max(1).catch(0.5),
+  optional: z.coerce.boolean().default(false),
+  fallbackPer100g: MacroOnlyProfileSchema,
+});
+
+export const AiCompositeDishBreakdownSchema = z.object({
+  dishName: z.string().trim().min(1),
+  totalEstimatedGrams: z.coerce.number().positive(),
+  confidence: z.coerce.number().min(0).max(1).catch(0.5),
+  cookingMethod: z.string().trim().min(1).nullable().optional(),
+  ingredients: z.array(AiCompositeDishIngredientSchema).min(1),
+});
+
 export const ResolvedFoodItemSchema = z.object({
   foodName: z.string().trim().min(1),
   quantityDescription: z.string().trim().min(1),
   estimatedGrams: z.coerce.number().nonnegative(),
   confidence: z.coerce.number().min(0).max(1),
-  sourceKind: z.enum(['recipe', 'catalog', 'ai_fallback']),
+  sourceKind: z.enum(['recipe', 'catalog', 'ai_fallback', 'runtime_composite']),
   sourceLabel: z.string().trim().min(1),
   matchMode: MatchModeSchema,
   sourceStatus: SourceStatusSchema,
@@ -98,13 +133,45 @@ export const ResolvedFoodItemSchema = z.object({
   totalsMeta: NutritionProfileMeta23Schema,
 });
 
-export const ParseFoodDescriptionOutputSchema = z.array(ResolvedFoodItemSchema);
+export const ResolvedFoodItemsSchema = z.array(ResolvedFoodItemSchema);
+
+export const ParseFoodDescriptionSegmentSchema = z.object({
+  sourceDescription: z.string().trim().min(1),
+  compositeDishName: z.string().trim().min(1).nullable(),
+  resolutionKind: z.enum([
+    'direct_items',
+    'whole_dish_db',
+    'runtime_recipe_ingredients',
+    'runtime_ai_ingredients',
+    'ai_items',
+  ]),
+  totalNutrition: NutritionProfile23Schema,
+  totalNutritionMeta: NutritionProfileMeta23Schema,
+  totalWeight: z.coerce.number().nonnegative(),
+  overallConfidence: z.coerce.number().min(0).max(1),
+  items: ResolvedFoodItemsSchema,
+  ingredientBreakdown: ResolvedFoodItemsSchema.default([]),
+});
+
+export const ParseFoodDescriptionOutputSchema = z.object({
+  compositeDishName: z.string().trim().min(1).nullable(),
+  totalNutrition: NutritionProfile23Schema,
+  totalNutritionMeta: NutritionProfileMeta23Schema,
+  totalWeight: z.coerce.number().nonnegative(),
+  overallConfidence: z.coerce.number().min(0).max(1),
+  items: ResolvedFoodItemsSchema,
+  segments: z.array(ParseFoodDescriptionSegmentSchema).min(1),
+});
 
 export {NutritionProfile23Schema, NutritionProfileMeta23Schema, NutrientDatumMetaSchema};
 export type ParseFoodDescriptionInput = z.infer<typeof ParseFoodDescriptionInputSchema>;
 export type AiParsedFoodItem = z.infer<typeof AiParsedFoodItemSchema>;
+export type AiCompositeDishBreakdown = z.infer<typeof AiCompositeDishBreakdownSchema>;
+export type AiCompositeDishIngredient = z.infer<typeof AiCompositeDishIngredientSchema>;
 export type ParseFoodDescriptionOutput = z.infer<typeof ParseFoodDescriptionOutputSchema>;
+export type ParseFoodDescriptionSegment = z.infer<typeof ParseFoodDescriptionSegmentSchema>;
 export type ResolvedFoodItem = z.infer<typeof ResolvedFoodItemSchema>;
+export type ResolvedFoodItems = z.infer<typeof ResolvedFoodItemsSchema>;
 export type ValidationFlag = z.infer<typeof ValidationFlagSchema>;
 export type MatchMode = z.infer<typeof MatchModeSchema>;
 export type SourceStatus = z.infer<typeof SourceStatusSchema>;

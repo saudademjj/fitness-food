@@ -57,6 +57,8 @@ PGPASSWORD=<your-password>
    ```bash
    psql "$DATABASE_URL" -f db/migrations/20260316_food_system_upgrade.sql
    psql "$DATABASE_URL" -f db/migrations/20260316_nutrition_profile23_upgrade.sql
+   psql "$DATABASE_URL" -f db/migrations/20260317_nutrition_runtime_hardening.sql
+   psql "$DATABASE_URL" -f db/migrations/20260317_runtime_composite_observability.sql
    bash ./db/refresh_materialized_views.sh
    ```
 
@@ -71,7 +73,9 @@ PGPASSWORD=<your-password>
    如果跳出“营养物化视图为空”的报错，说明 `core.app_food_profile_23 / core.app_recipe_profile_23 / core.app_catalog_profile_23` 还没有 refresh 成功，先重新执行上面的 refresh 脚本再启动。
 
 6. 用 `systemd` 托管 Next.js
-7. 安装 `deploy/systemd/fitness-food-refresh.service` 与 `deploy/systemd/fitness-food-refresh.timer`，启用每日 04:10 的物化视图刷新
+7. 安装 `deploy/systemd/fitness-food-refresh.service` 与 `deploy/systemd/fitness-food-refresh.timer`
+
+   现在 timer 按小时检查一次，但脚本会先读取 `app.materialized_view_refresh_state`；只有底层营养/recipe 数据被触发器标记为 pending 时，才会执行 `REFRESH MATERIALIZED VIEW CONCURRENTLY`
 
    如果这些物化视图的 owner 是 `postgres`，在服务器 `.env.local` 里额外加一行：
 

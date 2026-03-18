@@ -7,6 +7,9 @@ export function getSourceKindLabel(sourceKind: ResolvedFoodItem['sourceKind']): 
   if (sourceKind === 'catalog') {
     return '标准营养库';
   }
+  if (sourceKind === 'runtime_composite') {
+    return '运行时整菜聚算';
+  }
   return 'AI 估算';
 }
 
@@ -16,6 +19,9 @@ export function getMatchModeLabel(matchMode: ResolvedFoodItem['matchMode']): str
   }
   if (matchMode === 'fuzzy') {
     return '相似匹配';
+  }
+  if (matchMode === 'runtime_ingredients') {
+    return '原料聚算';
   }
   return 'AI兜底';
 }
@@ -31,6 +37,18 @@ export function getReliabilityMeta(
   hintClass: string;
   description: string;
 } {
+  if (item.validationFlags.includes('brand_curated_override')) {
+    return {
+      label: '品牌营养覆盖',
+      badgeClass: 'border-sky-200 bg-sky-50 text-sky-700',
+      hintClass: 'border-sky-200 bg-sky-50 text-sky-800',
+      description:
+        item.validationFlags.includes('db_candidate_rejected')
+          ? '已跳过命中的异常数据库候选，改用经过人工校准的品牌营养档案。'
+          : '这项命中了人工校准的品牌营养档案，适合处理数据库缺口或明显异常的高频品牌食物。',
+    };
+  }
+
   if (
     item.sourceKind !== 'ai_fallback' &&
     item.validationFlags.includes('nutrition_partial')
@@ -44,6 +62,28 @@ export function getReliabilityMeta(
           ? '数据库提供了宏量与已知营养，缺失项已用 AI 保守补齐，并会在详情中单独标记。'
           : '数据库命中了这项食物，但部分微量营养素缺失，缺失项不会再被静默显示成 0。',
     };
+  }
+
+  if (item.sourceKind === 'runtime_composite') {
+    const aiDriven =
+      item.validationFlags.includes('runtime_ai_ingredients') ||
+      item.validationFlags.includes('ingredient_ai_macro_estimate');
+
+    return aiDriven
+      ? {
+          label: '整菜原料聚算需复核',
+          badgeClass: 'border-amber-300 bg-amber-50 text-amber-800',
+          hintClass: 'border-amber-200 bg-amber-50 text-amber-900',
+          description:
+            '这道菜已拆成原料后重新聚算，总营养比整菜 AI 更稳，但若部分原料仍靠 AI 宏量估算，细节仍建议人工核对。',
+        }
+      : {
+          label: '整菜原料聚算',
+          badgeClass: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+          hintClass: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+          description:
+            '这道菜的营养值由原料逐项查库后运行时聚合而成，可同时查看整菜总量和原料明细。',
+        };
   }
 
   if (item.sourceKind !== 'ai_fallback' && item.matchMode === 'exact') {
@@ -94,6 +134,12 @@ export function formatValidationFlag(flag: ResolvedFoodItem['validationFlags'][n
       return 'AI 营养值已保守修正';
     case 'db_lookup_miss':
       return '数据库未命中';
+    case 'db_candidate_rejected':
+      return '已跳过异常数据库候选';
+    case 'db_candidate_thermodynamic_mismatch':
+      return '数据库候选热量与宏量不自洽';
+    case 'brand_curated_override':
+      return '已应用品牌营养覆盖';
     case 'portion_reference_applied':
       return '已应用标准份量';
     case 'portion_keyword_applied':
@@ -110,6 +156,14 @@ export function formatValidationFlag(flag: ResolvedFoodItem['validationFlags'][n
       return '整道菜 DB 结果已覆盖拆解估算';
     case 'whole_dish_component_aligned':
       return '拆解项已对齐整道菜 DB 总量';
+    case 'runtime_recipe_ingredients':
+      return '已按菜谱原料运行时聚算';
+    case 'runtime_ai_ingredients':
+      return '已按 AI 拆解原料运行时聚算';
+    case 'ingredient_ai_macro_estimate':
+      return '部分原料宏量来自 AI 估算';
+    case 'ingredient_reference_micros_merged':
+      return '部分原料微量营养参考近似数据库食物';
     case 'low_confidence':
       return '置信度较低，建议人工确认';
     case 'ai_macro_unverified':

@@ -2,8 +2,8 @@
 
 import type {FoodLogEntry} from '@/components/macro-calculator/types';
 import {parseFoodDescription} from '@/ai/flows/parse-food-description-flow';
-import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
-import {COMPOSITE_FOOD_PATTERN, sanitizeFoodName} from '@/lib/food-text';
+import type {ResolvedFoodItem, ResolvedFoodItems} from '@/lib/food-contract';
+import {isCompositeFoodName, sanitizeFoodName} from '@/lib/food-text';
 import {
   createNutritionLookupResolver,
   type NutritionLookupResolver,
@@ -28,7 +28,7 @@ export async function listFoodLogEntriesAction(date?: string): Promise<FoodLogEn
 }
 
 export async function saveParsedFoodsAction(
-  foods: ParseFoodDescriptionOutput,
+  foods: ResolvedFoodItems,
   sourceDescription?: string | null,
   eatenAt?: number,
   eatenOn?: string
@@ -38,9 +38,9 @@ export async function saveParsedFoodsAction(
 }
 
 function applyEditedWeight(
-  food: ParseFoodDescriptionOutput[number],
+  food: ResolvedFoodItem,
   targetGrams: number
-): ParseFoodDescriptionOutput[number] {
+): ResolvedFoodItem {
   return {
     ...food,
     estimatedGrams: targetGrams,
@@ -58,8 +58,8 @@ const RETAINED_EDIT_VALIDATION_FLAGS = [
 ] as const;
 
 function retainEditValidationFlags(
-  flags: ParseFoodDescriptionOutput[number]['validationFlags']
-): ParseFoodDescriptionOutput[number]['validationFlags'] {
+  flags: ResolvedFoodItem['validationFlags']
+): ResolvedFoodItem['validationFlags'] {
   return flags.filter((flag) =>
     RETAINED_EDIT_VALIDATION_FLAGS.includes(
       flag as (typeof RETAINED_EDIT_VALIDATION_FLAGS)[number]
@@ -68,9 +68,9 @@ function retainEditValidationFlags(
 }
 
 function buildResolvedEditedFood(
-  food: ParseFoodDescriptionOutput[number],
+  food: ResolvedFoodItem,
   dbMatch: NutritionLookupResult
-): ParseFoodDescriptionOutput[number] {
+): ResolvedFoodItem {
   const adjusted = applyPreparationNutritionAdjustments(
     dbMatch.per100g,
     dbMatch.per100gMeta,
@@ -101,27 +101,27 @@ function buildResolvedEditedFood(
 
 function pickEditedFallbackCandidate(
   foodName: string,
-  parsed: ParseFoodDescriptionOutput
-): ParseFoodDescriptionOutput[number] | null {
-  if (!parsed.length) {
+  parsed: ReturnType<typeof parseFoodDescription> extends Promise<infer T> ? T : never
+): ResolvedFoodItem | null {
+  if (!parsed.items.length) {
     return null;
   }
 
   return (
-    parsed.find((candidate) => candidate.foodName === foodName) ??
-    parsed.find(
+    parsed.items.find((candidate) => candidate.foodName === foodName) ??
+    parsed.items.find(
       (candidate) =>
         candidate.foodName.includes(foodName) || foodName.includes(candidate.foodName)
     ) ??
-    parsed[0] ??
+    parsed.items[0] ??
     null
   );
 }
 
 async function resolveEditedFood(
-  food: ParseFoodDescriptionOutput[number],
+  food: ResolvedFoodItem,
   lookupResolver: NutritionLookupResolver
-): Promise<ParseFoodDescriptionOutput[number]> {
+): Promise<ResolvedFoodItem> {
   const sanitizedName = sanitizeFoodName(food.foodName);
   if (!sanitizedName) {
     return food;
@@ -132,7 +132,7 @@ async function resolveEditedFood(
     foodName: sanitizedName,
   };
   const dbMatch = await lookupResolver(sanitizedName, {
-    allowFuzzy: !COMPOSITE_FOOD_PATTERN.test(sanitizedName),
+    allowFuzzy: !isCompositeFoodName(sanitizedName),
     recordMiss: true,
   });
   if (dbMatch) {
@@ -171,19 +171,19 @@ function buildMigrationRefreshDescription(entry: FoodLogEntry): string {
 
 function pickMigrationCandidate(
   entry: FoodLogEntry,
-  parsed: ParseFoodDescriptionOutput
-): ParseFoodDescriptionOutput[number] | null {
-  if (!parsed.length) {
+  parsed: ReturnType<typeof parseFoodDescription> extends Promise<infer T> ? T : never
+): ResolvedFoodItem | null {
+  if (!parsed.items.length) {
     return null;
   }
 
   return (
-    parsed.find((food) => food.foodName === entry.foodName) ??
-    parsed.find(
+    parsed.items.find((food) => food.foodName === entry.foodName) ??
+    parsed.items.find(
       (food) =>
         food.foodName.includes(entry.foodName) || entry.foodName.includes(food.foodName)
     ) ??
-    parsed[0] ??
+    parsed.items[0] ??
     null
   );
 }
@@ -222,15 +222,15 @@ async function refreshEntryForMigration(
 }
 
 export async function resolveEditedFoodsAction(
-  foods: ParseFoodDescriptionOutput
-): Promise<ParseFoodDescriptionOutput> {
+  foods: ResolvedFoodItems
+): Promise<ResolvedFoodItems> {
   const lookupResolver = createNutritionLookupResolver();
   return Promise.all(foods.map((food) => resolveEditedFood(food, lookupResolver)));
 }
 
 export async function updateFoodLogItemAction(
   itemId: string,
-  food: ParseFoodDescriptionOutput[number]
+  food: ResolvedFoodItem
 ): Promise<FoodLogEntry> {
   const viewer = await requireViewer();
   return updateFoodLogItem(viewer.id, itemId, food);

@@ -22,16 +22,16 @@ import {NutritionDetailGrid} from '@/components/macro-calculator/nutrition-detai
 import {getReliabilityMeta} from '@/lib/source-meta';
 import {normalizeLookupText, sanitizeFoodName} from '@/lib/food-text';
 
-type EditableFoodItem = ParseFoodDescriptionOutput[number] & {
+type EditableFoodItem = ParseFoodDescriptionOutput['items'][number] & {
   __originalIndex: number;
 };
 
 interface ConfirmationDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  parsedFoods: ParseFoodDescriptionOutput;
+  parsedResult: ParseFoodDescriptionOutput;
   onConfirm: (payload: {
-    foods: ParseFoodDescriptionOutput;
+    foods: ParseFoodDescriptionOutput['items'];
     requiresReconciliation: boolean;
   }) => void;
   dialogTitle?: string;
@@ -51,7 +51,7 @@ function formatNutritionCardValue(value: number | null, status: 'measured' | 'es
 export function ConfirmationDialog({
   isOpen,
   onClose,
-  parsedFoods,
+  parsedResult,
   onConfirm,
   dialogTitle = '确认食物与重量',
   dialogDescription = '先确认识别结果，再调节名称和克重。23 项营养会根据每 100g 数据实时重算。',
@@ -62,21 +62,21 @@ export function ConfirmationDialog({
   const [requiresReconciliation, setRequiresReconciliation] = useState(false);
 
   useEffect(() => {
-    setEditedFoods(parsedFoods.map((food, index) => ({...food, __originalIndex: index})));
+    setEditedFoods(parsedResult.items.map((food, index) => ({...food, __originalIndex: index})));
     setRequiresReconciliation(false);
-  }, [parsedFoods]);
+  }, [parsedResult]);
 
   useEffect(() => {
     setRequiresReconciliation(
       editedFoods.some((food) => {
-        const originalFood = parsedFoods[food.__originalIndex];
+        const originalFood = parsedResult.items[food.__originalIndex];
         return (
           normalizeLookupText(sanitizeFoodName(food.foodName)) !==
           normalizeLookupText(sanitizeFoodName(originalFood?.foodName ?? ''))
         );
       })
     );
-  }, [editedFoods, parsedFoods]);
+  }, [editedFoods, parsedResult]);
 
   const handleWeightUpdate = (index: number, grams: number) => {
     const updated = [...editedFoods];
@@ -111,6 +111,59 @@ export function ConfirmationDialog({
 
         <ScrollArea className="h-[520px] px-6 py-4">
           <div className="space-y-6">
+            {parsedResult.segments.map((segment, index) => (
+              <div
+                key={`${segment.sourceDescription}-${index}`}
+                className="rounded-2xl border border-primary/10 bg-primary/[0.03] p-4"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-primary">
+                      {segment.compositeDishName ?? segment.sourceDescription}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {segment.totalWeight}g · 置信度 {Math.round(segment.overallConfidence * 100)}%
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    <div className="rounded-xl bg-white px-3 py-2 text-xs">
+                      热量 {segment.totalNutrition.energyKcal?.toFixed(1) ?? '--'} kcal
+                    </div>
+                    <div className="rounded-xl bg-white px-3 py-2 text-xs">
+                      蛋白 {segment.totalNutrition.proteinGrams?.toFixed(1) ?? '--'} g
+                    </div>
+                    <div className="rounded-xl bg-white px-3 py-2 text-xs">
+                      碳水 {segment.totalNutrition.carbohydrateGrams?.toFixed(1) ?? '--'} g
+                    </div>
+                    <div className="rounded-xl bg-white px-3 py-2 text-xs">
+                      脂肪 {segment.totalNutrition.fatGrams?.toFixed(1) ?? '--'} g
+                    </div>
+                  </div>
+                </div>
+                {segment.ingredientBreakdown.length > 0 ? (
+                  <details className="mt-3 rounded-xl border border-border/70 bg-white/80 p-3">
+                    <summary className="cursor-pointer text-sm font-medium text-primary">
+                      展开原料明细
+                    </summary>
+                    <div className="mt-3 space-y-2">
+                      {segment.ingredientBreakdown.map((ingredient, ingredientIndex) => (
+                        <div
+                          key={`${ingredient.foodName}-${ingredientIndex}`}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-secondary/20 px-3 py-2 text-xs"
+                        >
+                          <div className="font-medium text-primary">
+                            {ingredient.foodName}
+                          </div>
+                          <div className="text-muted-foreground">
+                            {ingredient.estimatedGrams}g · {ingredient.sourceLabel}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
+              </div>
+            ))}
             {editedFoods.map((food, idx) => {
               const reliability = getReliabilityMeta(food);
               return (

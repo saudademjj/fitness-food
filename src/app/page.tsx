@@ -63,7 +63,7 @@ export default function MacroHelperPage() {
   const [localEntries, setLocalEntries] = useState<FoodLogEntry[]>([]);
   const [serverEntries, setServerEntries] = useState<FoodLogEntry[]>([]);
   const [goals, setGoals] = useState<MacroGoals>(DEFAULT_GOALS);
-  const [parsedFoods, setParsedFoods] = useState<ParseFoodDescriptionOutput>([]);
+  const [parsedResult, setParsedResult] = useState<ParseFoodDescriptionOutput | null>(null);
   const [pendingDescription, setPendingDescription] = useState('');
   const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [viewer, setViewer] = useState<ViewerState>(null);
@@ -213,10 +213,10 @@ export default function MacroHelperPage() {
   };
 
   const handleFoodsParsed = (payload: {
-    foods: ParseFoodDescriptionOutput;
+    result: ParseFoodDescriptionOutput;
     description: string;
   }) => {
-    setParsedFoods(payload.foods);
+    setParsedResult(payload.result);
     setPendingDescription(payload.description);
     setEditingEntry(null);
     setIsConfirmOpen(true);
@@ -226,7 +226,7 @@ export default function MacroHelperPage() {
     foods,
     requiresReconciliation,
   }: {
-    foods: ParseFoodDescriptionOutput;
+    foods: ParseFoodDescriptionOutput['items'];
     requiresReconciliation: boolean;
   }) => {
     setIsConfirming(true);
@@ -287,7 +287,7 @@ export default function MacroHelperPage() {
       }
 
       setIsConfirmOpen(false);
-      setParsedFoods([]);
+      setParsedResult(null);
       setPendingDescription('');
       setEditingEntry(null);
     } catch (error) {
@@ -324,24 +324,43 @@ export default function MacroHelperPage() {
 
   const handleEditEntry = (entry: FoodLogEntry) => {
     setEditingEntry(entry);
-    setParsedFoods([
-      {
-        foodName: entry.foodName,
-        quantityDescription: entry.quantityDescription,
-        estimatedGrams: entry.estimatedGrams,
-        confidence: entry.confidence,
-        sourceKind: entry.sourceKind,
-        sourceLabel: entry.sourceLabel,
-        matchMode: entry.matchMode,
-        sourceStatus: entry.sourceStatus,
-        amountBasisG: entry.amountBasisG,
-        validationFlags: entry.validationFlags,
-        per100g: entry.per100g,
-        per100gMeta: entry.per100gMeta,
-        totals: entry.totals,
-        totalsMeta: entry.totalsMeta,
-      },
-    ]);
+    const item = {
+      foodName: entry.foodName,
+      quantityDescription: entry.quantityDescription,
+      estimatedGrams: entry.estimatedGrams,
+      confidence: entry.confidence,
+      sourceKind: entry.sourceKind,
+      sourceLabel: entry.sourceLabel,
+      matchMode: entry.matchMode,
+      sourceStatus: entry.sourceStatus,
+      amountBasisG: entry.amountBasisG,
+      validationFlags: entry.validationFlags,
+      per100g: entry.per100g,
+      per100gMeta: entry.per100gMeta,
+      totals: entry.totals,
+      totalsMeta: entry.totalsMeta,
+    };
+    setParsedResult({
+      compositeDishName: null,
+      totalNutrition: entry.totals,
+      totalNutritionMeta: entry.totalsMeta,
+      totalWeight: entry.estimatedGrams,
+      overallConfidence: entry.confidence,
+      items: [item],
+      segments: [
+        {
+          sourceDescription: entry.foodName,
+          compositeDishName: null,
+          resolutionKind: 'direct_items',
+          totalNutrition: entry.totals,
+          totalNutritionMeta: entry.totalsMeta,
+          totalWeight: entry.estimatedGrams,
+          overallConfidence: entry.confidence,
+          items: [item],
+          ingredientBreakdown: [],
+        },
+      ],
+    });
     setPendingDescription(entry.foodName);
     setIsConfirmOpen(true);
   };
@@ -592,26 +611,29 @@ export default function MacroHelperPage() {
         </div>
       </main>
 
-      <ConfirmationDialog
-        isOpen={isConfirmOpen}
-        onClose={() => {
-          if (isConfirming) {
-            return;
+      {parsedResult ? (
+        <ConfirmationDialog
+          isOpen={isConfirmOpen}
+          onClose={() => {
+            if (isConfirming) {
+              return;
+            }
+            setIsConfirmOpen(false);
+            setEditingEntry(null);
+            setParsedResult(null);
+          }}
+          parsedResult={parsedResult}
+          onConfirm={handleConfirmFoods}
+          isSubmitting={isConfirming}
+          dialogTitle={editingEntry ? '编辑历史记录' : '确认食物与重量'}
+          dialogDescription={
+            editingEntry
+              ? '修改名称或克重后，系统会重新校验营养值并覆盖原记录。'
+              : '先确认识别结果，再调节名称和克重。整菜总营养和原料明细都会一起展示。'
           }
-          setIsConfirmOpen(false);
-          setEditingEntry(null);
-        }}
-        parsedFoods={parsedFoods}
-        onConfirm={handleConfirmFoods}
-        isSubmitting={isConfirming}
-        dialogTitle={editingEntry ? '编辑历史记录' : '确认食物与重量'}
-        dialogDescription={
-          editingEntry
-            ? '修改名称或克重后，系统会重新校验营养值并覆盖原记录。'
-            : '先确认识别结果，再调节名称和克重。23 项营养会根据每 100g 数据实时重算。'
-        }
-        confirmLabel={editingEntry ? '保存修改' : viewer ? '确认并同步' : '确认并存为草稿'}
-      />
+          confirmLabel={editingEntry ? '保存修改' : viewer ? '确认并同步' : '确认并存为草稿'}
+        />
+      ) : null}
 
       <Toaster />
     </div>

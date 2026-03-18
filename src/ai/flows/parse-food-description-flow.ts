@@ -6,13 +6,15 @@ import {
   type AiParsedFoodItem,
   type ParseFoodDescriptionInput,
   type ParseFoodDescriptionOutput,
-  type ResolvedFoodItem,
+  type ParseFoodDescriptionSegment,
+  type ResolvedFoodItems,
 } from '@/lib/food-contract';
+import {resolveCompositeDishFromRecipe, resolveCompositeDishWithAiIngredients} from '@/lib/composite-dish';
 import {tryResolveDirectDescription} from '@/lib/direct-food-parser';
 import {
-  COMPOSITE_FOOD_PATTERN,
   extractSingleFoodCandidate,
   extractWholeDishCandidate,
+  isCompositeFoodName,
   parseQuantity,
   sanitizeFoodName,
   splitFoodDescriptionSegments,
@@ -20,31 +22,24 @@ import {
 import {parseFoodCandidatesWithGemini} from '@/lib/gemini';
 import {
   aggregateNutritionProfiles,
-  buildNutritionProfileMeta,
-  cloneNutritionProfileMeta,
-  coalesceNutritionValue,
-  convertTotalsToPer100g,
   createNutritionProfile,
-  createNutritionProfileMeta,
-  hasAnyNutritionValue,
-  mergeNutritionProfiles,
-  scaleNutritionProfile,
-  sumNutritionProfiles,
-  NON_CORE_NUTRITION_KEYS,
   type NutritionFieldKey,
-  type NutritionProfile23,
-  type NutritionProfileMeta23,
 } from '@/lib/nutrition-profile';
-import {
-  applyPreparationNutritionAdjustments,
-  estimateGrams,
-} from '@/lib/portion-reference';
+import {estimateGrams} from '@/lib/portion-reference';
 import {
   createNutritionLookupResolver,
   type NutritionLookupResolver,
   type NutritionLookupResult,
 } from '@/lib/nutrition-db';
+import {buildResolvedFood} from '@/lib/resolved-food';
+import {recordFoodParseTelemetry, recordRuntimeError, type WeightResolutionTrace} from '@/lib/runtime-observability';
 import {dedupeValidationFlags} from '@/lib/validation';
+
+type WeightedResolution = {
+  estimatedGrams: number;
+  validationFlags: ResolvedFoodItems[number]['validationFlags'];
+  trace: WeightResolutionTrace;
+};
 
 function sanitizeCandidate(candidate: AiParsedFoodItem): AiParsedFoodItem {
   return {
@@ -54,24 +49,10 @@ function sanitizeCandidate(candidate: AiParsedFoodItem): AiParsedFoodItem {
   };
 }
 
-function getFallbackMeta(candidate: AiParsedFoodItem): NutritionProfileMeta23 {
-  return (
-    candidate.fallbackPer100gMeta ??
-    buildNutritionProfileMeta(candidate.fallbackPer100g, {
-      knownStatus: 'estimated',
-      knownSource: 'ai',
-      missingSource: 'ai',
-    })
-  );
-}
-
 async function chooseEstimatedGrams(
   candidate: AiParsedFoodItem,
   matchedName?: string | null
-): Promise<{
-  estimatedGrams: number;
-  validationFlags: ResolvedFoodItem['validationFlags'];
-}> {
+): Promise<WeightedResolution> {
   const estimated = await estimateGrams(
     candidate.foodName,
     candidate.quantityDescription,
@@ -83,11 +64,25 @@ async function chooseEstimatedGrams(
     Number.isFinite(candidate.estimatedGrams) && candidate.estimatedGrams > 0;
   const hasHighConfidenceCandidateEstimate = hasCandidateEstimate && candidate.confidence >= 0.75;
   const portionMatchStrategy = estimated.portion?.matchStrategy ?? 'fallback';
+  const baseTrace = {
+    foodName: candidate.foodName,
+    quantityDescription: candidate.quantityDescription,
+    portionMatchStrategy:
+      estimated.portion?.matchStrategy ?? ('none' as const),
+    aiEstimatedGrams: hasCandidateEstimate ? candidate.estimatedGrams : null,
+    portionEstimatedGrams: estimated.grams,
+    matchedName: matchedName ?? null,
+  };
 
   if (hasExplicitMetricUnit) {
     return {
       estimatedGrams: estimated.grams,
       validationFlags: estimated.validationFlags,
+      trace: {
+        ...baseTrace,
+        strategy: 'explicit_metric',
+        finalEstimatedGrams: estimated.grams,
+      },
     };
   }
 
@@ -95,6 +90,11 @@ async function chooseEstimatedGrams(
     return {
       estimatedGrams: estimated.grams,
       validationFlags: estimated.validationFlags,
+      trace: {
+        ...baseTrace,
+        strategy: 'portion_exact',
+        finalEstimatedGrams: estimated.grams,
+      },
     };
   }
 
@@ -102,13 +102,22 @@ async function chooseEstimatedGrams(
     const delta =
       Math.abs(candidate.estimatedGrams - estimated.grams) /
       Math.max(candidate.estimatedGrams, estimated.grams, 1);
+    const estimatedPreferred =
+      delta <= 0.3 || estimated.confidenceScore >= 0.85;
+    const finalEstimatedGrams = estimatedPreferred
+      ? estimated.grams
+      : candidate.estimatedGrams;
 
     return {
-      estimatedGrams:
-        delta <= 0.3 || estimated.confidenceScore >= 0.85
-          ? estimated.grams
-          : candidate.estimatedGrams,
+      estimatedGrams: finalEstimatedGrams,
       validationFlags: estimated.validationFlags,
+      trace: {
+        ...baseTrace,
+        strategy: estimatedPreferred
+          ? 'portion_keyword_preferred'
+          : 'portion_keyword_ai_preferred',
+        finalEstimatedGrams,
+      },
     };
   }
 
@@ -116,143 +125,33 @@ async function chooseEstimatedGrams(
     const delta =
       Math.abs(candidate.estimatedGrams - estimated.grams) /
       Math.max(candidate.estimatedGrams, estimated.grams, 1);
+    const aiPreferred = delta <= 0.35 || candidate.confidence >= 0.9;
+    const finalEstimatedGrams = aiPreferred
+      ? candidate.estimatedGrams
+      : estimated.grams;
 
     return {
-      estimatedGrams:
-        delta <= 0.35 || candidate.confidence >= 0.9
-          ? candidate.estimatedGrams
-          : estimated.grams,
+      estimatedGrams: finalEstimatedGrams,
       validationFlags: estimated.validationFlags,
+      trace: {
+        ...baseTrace,
+        strategy: aiPreferred
+          ? 'portion_fallback_ai_preferred'
+          : 'portion_fallback_preferred',
+        finalEstimatedGrams,
+      },
     };
   }
 
   return {
     estimatedGrams: estimated.grams,
     validationFlags: estimated.validationFlags,
+    trace: {
+      ...baseTrace,
+      strategy: 'portion_default',
+      finalEstimatedGrams: estimated.grams,
+    },
   };
-}
-
-function summarizeMissingNutrition(
-  meta: NutritionProfileMeta23,
-  keys: NutritionFieldKey[] = NON_CORE_NUTRITION_KEYS
-): NutritionFieldKey[] {
-  return keys.filter((key) => meta[key].status === 'missing');
-}
-
-function buildResolvedFood(
-  candidate: AiParsedFoodItem,
-  dbMatch: NutritionLookupResult | null,
-  estimatedGrams: number,
-  validationFlags: ResolvedFoodItem['validationFlags']
-): ResolvedFoodItem {
-  const fallbackMeta = getFallbackMeta(candidate);
-  const fallbackPreparation = applyPreparationNutritionAdjustments(
-    candidate.fallbackPer100g,
-    fallbackMeta,
-    candidate.foodName
-  );
-
-  let per100g = fallbackPreparation.profile;
-  let per100gMeta = fallbackPreparation.meta;
-  let sourceLabel = candidate.fallbackAdjusted ? 'AI 保守修正估算' : 'AI 估算';
-  let confidence = Math.min(
-    candidate.confidence,
-    candidate.fallbackAdjusted ? 0.45 : 0.65,
-    candidate.fallbackValidationIssues.length ? 0.35 : 1
-  );
-  const fallbackFlags: ResolvedFoodItem['validationFlags'] = [
-    'ai_macro_estimate',
-    'db_lookup_miss',
-    ...(candidate.fallbackAdjusted ? (['ai_macro_clamped'] as const) : []),
-    ...(candidate.fallbackValidationIssues.length ? (['ai_macro_unverified'] as const) : []),
-  ];
-
-  if (dbMatch) {
-    const merged = mergeNutritionProfiles(
-      dbMatch.per100g,
-      dbMatch.per100gMeta,
-      candidate.fallbackPer100g,
-      fallbackMeta,
-      NON_CORE_NUTRITION_KEYS
-    );
-    const prepared = applyPreparationNutritionAdjustments(
-      merged.profile,
-      merged.meta,
-      candidate.foodName,
-      dbMatch.matchedName
-    );
-    per100g = prepared.profile;
-    per100gMeta = prepared.meta;
-    sourceLabel = dbMatch.sourceLabel;
-    confidence =
-      merged.filledKeys.length > 0
-        ? Math.min(candidate.confidence, dbMatch.matchMode === 'exact' ? 0.88 : 0.8)
-        : candidate.confidence;
-
-    fallbackFlags.length = 0;
-    if (merged.filledKeys.length > 0) {
-      fallbackFlags.push('db_micronutrient_ai_merged');
-      sourceLabel = `${dbMatch.sourceLabel} · AI 补齐 ${merged.filledKeys.length} 项缺失营养`;
-    }
-  }
-
-  const missingFields = summarizeMissingNutrition(per100gMeta);
-  if (missingFields.length > 0) {
-    fallbackFlags.push('nutrition_partial', 'nutrition_unknown');
-  }
-
-  const baselineFlags =
-    dbMatch?.validationFlags.filter((flag) => {
-      if (flag === 'db_micronutrient_gap' || flag === 'nutrition_partial' || flag === 'nutrition_unknown') {
-        return missingFields.length > 0;
-      }
-      return true;
-    }) ?? [];
-  const combinedFlags = dedupeValidationFlags([
-    ...baselineFlags,
-    ...fallbackFlags,
-    ...validationFlags,
-  ]);
-
-  return {
-    foodName: candidate.foodName,
-    quantityDescription: candidate.quantityDescription,
-    estimatedGrams,
-    confidence: dbMatch ? confidence : Math.min(confidence, missingFields.length ? 0.5 : 0.65),
-    sourceKind: dbMatch?.sourceKind ?? 'ai_fallback',
-    sourceLabel,
-    matchMode: dbMatch?.matchMode ?? 'ai_fallback',
-    sourceStatus: dbMatch?.sourceStatus ?? 'published',
-    amountBasisG: dbMatch?.amountBasisG ?? 100,
-    validationFlags: dedupeValidationFlags(
-      confidence < 0.65 ? [...combinedFlags, 'low_confidence'] : combinedFlags
-    ),
-    per100g,
-    per100gMeta,
-    totals: scaleNutritionProfile(per100g, estimatedGrams),
-    totalsMeta: cloneNutritionProfileMeta(per100gMeta),
-  };
-}
-
-async function resolveCandidate(
-  candidate: AiParsedFoodItem,
-  lookupResolver: NutritionLookupResolver
-): Promise<ResolvedFoodItem[]> {
-  const normalizedCandidate = sanitizeCandidate(candidate);
-  const dbMatch = await lookupResolver(normalizedCandidate.foodName, {
-    allowFuzzy: !COMPOSITE_FOOD_PATTERN.test(normalizedCandidate.foodName),
-    recordMiss: true,
-  });
-  const estimated = await chooseEstimatedGrams(normalizedCandidate, dbMatch?.matchedName);
-
-  return [
-    buildResolvedFood(
-      normalizedCandidate,
-      dbMatch,
-      estimated.estimatedGrams,
-      estimated.validationFlags
-    ),
-  ];
 }
 
 function extractSingleMetricWeight(description: string): number | null {
@@ -270,7 +169,7 @@ function extractSingleMetricWeight(description: string): number | null {
 
 async function determineTargetTotalWeight(
   description: string,
-  foods: ParseFoodDescriptionOutput
+  foods: ResolvedFoodItems
 ): Promise<number | null> {
   const explicitWeight = extractSingleMetricWeight(description);
   if (explicitWeight) {
@@ -295,9 +194,9 @@ async function determineTargetTotalWeight(
 }
 
 function rebalanceResolvedFoods(
-  foods: ParseFoodDescriptionOutput,
+  foods: ResolvedFoodItems,
   totalWeight: number | null
-): ParseFoodDescriptionOutput {
+): ResolvedFoodItems {
   if (!totalWeight || foods.length < 2) {
     return foods;
   }
@@ -338,252 +237,247 @@ function rebalanceResolvedFoods(
         ...item.validationFlags,
         'composite_total_rebalanced',
       ]),
-      totals: scaleNutritionProfile(item.per100g, nextGrams),
-      totalsMeta: cloneNutritionProfileMeta(item.per100gMeta),
+      totals: createNutritionProfile(
+        Object.keys(item.totals).reduce((acc, key) => {
+          const typedKey = key as NutritionFieldKey;
+          acc[typedKey] =
+            item.per100g[typedKey] === null
+              ? null
+              : Number(((item.per100g[typedKey] ?? 0) * nextGrams / 100).toFixed(1));
+          return acc;
+        }, {} as Partial<typeof item.totals>)
+      ),
+      totalsMeta: item.totalsMeta,
     };
   });
 }
 
-function computeCoreDeltaRatio(a: number | null, b: number | null): number {
-  return Math.abs(coalesceNutritionValue(a) - coalesceNutritionValue(b)) /
-    Math.max(coalesceNutritionValue(a), coalesceNutritionValue(b), 1);
+function calculateOverallConfidence(items: ResolvedFoodItems): number {
+  const totalWeight = items.reduce((sum, item) => sum + item.estimatedGrams, 0);
+  if (!totalWeight) {
+    return 0;
+  }
+
+  const weightedConfidence = items.reduce(
+    (sum, item) => sum + item.confidence * item.estimatedGrams,
+    0
+  );
+  return Number((weightedConfidence / totalWeight).toFixed(2));
 }
 
-function alignComponentsToWholeDish(
-  foods: ParseFoodDescriptionOutput,
-  wholeDishTotals: NutritionProfile23,
-  wholeDishTotalsMeta: NutritionProfileMeta23
-): ParseFoodDescriptionOutput {
-  const preservedFoods = foods.filter((item) => item.sourceKind !== 'ai_fallback');
-  const estimatedFoods = foods.filter((item) => item.sourceKind === 'ai_fallback');
-  if (!estimatedFoods.length) {
-    return foods;
-  }
-
-  const preservedTotals = sumNutritionProfiles(preservedFoods.map((item) => item.totals));
-  const estimatedTotals = sumNutritionProfiles(estimatedFoods.map((item) => item.totals));
-  const estimatedWeight = estimatedFoods.reduce((sum, item) => sum + item.estimatedGrams, 0);
-
-  const remainingTotals = createNutritionProfile(
-    (Object.keys(wholeDishTotals) as NutritionFieldKey[]).reduce(
-      (acc, key) => {
-        acc[key] =
-          wholeDishTotals[key] === null
-            ? null
-            : Number(
-                Math.max(
-                  coalesceNutritionValue(wholeDishTotals[key]) -
-                    coalesceNutritionValue(preservedTotals[key]),
-                  0
-                ).toFixed(1)
-              );
-        return acc;
-      },
-      {} as Record<NutritionFieldKey, number | null>
-    )
-  );
-
-  const lockedMacroOverflow = ['energyKcal', 'proteinGrams', 'carbohydrateGrams', 'fatGrams'].some(
-    (key) =>
-      coalesceNutritionValue(
-        preservedTotals[key as keyof NutritionProfile23]
-      ) >
-      coalesceNutritionValue(wholeDishTotals[key as keyof NutritionProfile23]) + 5
-  );
-  if (lockedMacroOverflow) {
-    return foods;
-  }
-
-  return foods.map((item) => {
-    if (item.sourceKind !== 'ai_fallback') {
-      return item;
-    }
-
-    const alignedTotals = createNutritionProfile(
-      (Object.keys(wholeDishTotals) as NutritionFieldKey[]).reduce(
-        (acc, key) => {
-          if (remainingTotals[key] === null) {
-            acc[key] = null;
-            return acc;
-          }
-
-          const denominator = coalesceNutritionValue(estimatedTotals[key]);
-          const share =
-            denominator > 0
-              ? coalesceNutritionValue(item.totals[key]) / denominator
-              : estimatedWeight > 0
-                ? item.estimatedGrams / estimatedWeight
-                : 1 / estimatedFoods.length;
-          acc[key] = Number((coalesceNutritionValue(remainingTotals[key]) * share).toFixed(1));
-          return acc;
-        },
-        {} as Record<NutritionFieldKey, number | null>
-      )
-    );
-
-    const alignedMeta = createNutritionProfileMeta(
-      (Object.keys(wholeDishTotalsMeta) as NutritionFieldKey[]).reduce(
-        (acc, key) => {
-          acc[key] =
-            wholeDishTotalsMeta[key].status === 'missing'
-              ? wholeDishTotalsMeta[key]
-              : {
-                  status: 'estimated',
-                  source: wholeDishTotalsMeta[key].source,
-                };
-          return acc;
-        },
-        {} as Partial<NutritionProfileMeta23>
-      )
-    );
-
-    return {
-      ...item,
-      per100g: convertTotalsToPer100g(alignedTotals, item.estimatedGrams),
-      per100gMeta: cloneNutritionProfileMeta(alignedMeta),
-      totals: alignedTotals,
-      totalsMeta: alignedMeta,
-      validationFlags: dedupeValidationFlags([
-        ...item.validationFlags,
-        'whole_dish_component_aligned',
-      ]),
-    };
-  });
-}
-
-async function maybeOverrideWithWholeDish(
-  description: string,
-  foods: ParseFoodDescriptionOutput,
-  lookupResolver: NutritionLookupResolver,
-  wholeDishMatch?: NutritionLookupResult | null
-): Promise<ParseFoodDescriptionOutput> {
-  const candidate =
-    extractWholeDishCandidate(description) ?? extractSingleFoodCandidate(description);
-  if (!candidate?.foodName) {
-    return foods;
-  }
-
-  const resolvedWholeDish =
-    wholeDishMatch ??
-    (await lookupResolver(candidate.foodName, {
-      allowFuzzy: true,
-    }));
-  if (!resolvedWholeDish) {
-    return foods;
-  }
-
-  const estimated = await estimateGrams(
-    candidate.foodName,
-    candidate.quantityDescription,
-    resolvedWholeDish.matchedName
-  );
-  const wholeDishPrepared = applyPreparationNutritionAdjustments(
-    resolvedWholeDish.per100g,
-    resolvedWholeDish.per100gMeta,
-    candidate.foodName,
-    resolvedWholeDish.matchedName
-  );
-  const wholeDishTotals = scaleNutritionProfile(wholeDishPrepared.profile, estimated.grams);
-  const wholeDishTotalsMeta = cloneNutritionProfileMeta(wholeDishPrepared.meta);
-  const aggregatedDecomposed = aggregateNutritionProfiles(
-    foods.map((item) => ({
+function buildSegmentFromItems(
+  sourceDescription: string,
+  items: ResolvedFoodItems,
+  resolutionKind: ParseFoodDescriptionSegment['resolutionKind'],
+  ingredientBreakdown: ResolvedFoodItems = []
+): ParseFoodDescriptionSegment {
+  const totals = aggregateNutritionProfiles(
+    items.map((item) => ({
       profile: item.totals,
       meta: item.totalsMeta,
     }))
   );
+  const compositeDishName =
+    items.length === 1 && isCompositeFoodName(items[0]!.foodName)
+      ? items[0]!.foodName
+      : null;
 
-  const energyDelta = computeCoreDeltaRatio(
-    wholeDishTotals.energyKcal,
-    aggregatedDecomposed.profile.energyKcal
+  return {
+    sourceDescription,
+    compositeDishName,
+    resolutionKind,
+    totalNutrition: totals.profile,
+    totalNutritionMeta: totals.meta,
+    totalWeight: items.reduce((sum, item) => sum + item.estimatedGrams, 0),
+    overallConfidence: calculateOverallConfidence(items),
+    items,
+    ingredientBreakdown,
+  };
+}
+
+async function buildWholeDishDbSegment(
+  candidate: {foodName: string; quantityDescription: string},
+  wholeDishMatch: NutritionLookupResult
+): Promise<ParseFoodDescriptionSegment> {
+  const estimated = await estimateGrams(
+    candidate.foodName,
+    candidate.quantityDescription,
+    wholeDishMatch.matchedName
   );
-  const proteinDelta = computeCoreDeltaRatio(
-    wholeDishTotals.proteinGrams,
-    aggregatedDecomposed.profile.proteinGrams
+  const item = buildResolvedFood({
+    foodName: wholeDishMatch.matchedName,
+    quantityDescription: candidate.quantityDescription,
+    estimatedGrams: estimated.grams,
+    confidence: wholeDishMatch.matchMode === 'exact' ? 0.94 : 0.84,
+    dbMatch: wholeDishMatch,
+    fallbackPer100g: createNutritionProfile(),
+    validationFlags: dedupeValidationFlags([
+      ...estimated.validationFlags,
+      ...(isCompositeFoodName(candidate.foodName) ? (['whole_dish_db_override'] as const) : []),
+    ]),
+  });
+
+  return buildSegmentFromItems(
+    candidate.quantityDescription === '未知'
+      ? candidate.foodName
+      : `${candidate.quantityDescription}${candidate.foodName}`,
+    [item],
+    'whole_dish_db'
   );
-  const carbohydrateDelta = computeCoreDeltaRatio(
-    wholeDishTotals.carbohydrateGrams,
-    aggregatedDecomposed.profile.carbohydrateGrams
-  );
-  const fatDelta = computeCoreDeltaRatio(
-    wholeDishTotals.fatGrams,
-    aggregatedDecomposed.profile.fatGrams
+}
+
+async function resolveAiCandidates(
+  description: string,
+  lookupResolver: NutritionLookupResolver
+): Promise<{items: ResolvedFoodItems; traces: WeightResolutionTrace[]}> {
+  const candidates = await parseFoodCandidatesWithGemini(description);
+  const resolved = await Promise.all(
+    candidates.map(async (candidate) => {
+      const normalizedCandidate = sanitizeCandidate(candidate);
+      const dbMatch = await lookupResolver(normalizedCandidate.foodName, {
+        allowFuzzy: !isCompositeFoodName(normalizedCandidate.foodName),
+        recordMiss: true,
+      });
+      const estimated = await chooseEstimatedGrams(normalizedCandidate, dbMatch?.matchedName);
+      const item = buildResolvedFood({
+        foodName: normalizedCandidate.foodName,
+        quantityDescription: normalizedCandidate.quantityDescription,
+        estimatedGrams: estimated.estimatedGrams,
+        confidence: normalizedCandidate.confidence,
+        dbMatch,
+        fallbackPer100g: normalizedCandidate.fallbackPer100g,
+        fallbackPer100gMeta: normalizedCandidate.fallbackPer100gMeta,
+        validationFlags: estimated.validationFlags,
+        fallbackValidationFlags: dedupeValidationFlags([
+          'ai_macro_estimate',
+          'db_lookup_miss',
+          ...(normalizedCandidate.fallbackAdjusted ? (['ai_macro_clamped'] as const) : []),
+          ...(normalizedCandidate.fallbackValidationIssues.length
+            ? (['ai_macro_unverified'] as const)
+            : []),
+        ]),
+        fallbackSourceLabel: normalizedCandidate.fallbackAdjusted
+          ? 'AI 保守修正宏量估算'
+          : 'AI 宏量估算',
+        fallbackConfidenceCap:
+          normalizedCandidate.fallbackAdjusted ||
+          normalizedCandidate.fallbackValidationIssues.length
+            ? 0.45
+            : 0.62,
+      });
+
+      return {
+        item,
+        trace: estimated.trace,
+      };
+    })
   );
 
-  if (
-    energyDelta <= 0.15 &&
-    proteinDelta <= 0.2 &&
-    carbohydrateDelta <= 0.2 &&
-    fatDelta <= 0.2
-  ) {
-    return alignComponentsToWholeDish(foods, wholeDishTotals, wholeDishTotalsMeta);
-  }
+  const items = resolved.map((entry) => entry.item);
+  const targetTotalWeight = await determineTargetTotalWeight(description, items);
+  const rebalancedItems = rebalanceResolvedFoods(items, targetTotalWeight);
 
-  if (resolvedWholeDish.matchMode === 'fuzzy') {
-    return foods;
-  }
-
-  return [
-    {
-      foodName: resolvedWholeDish.matchedName,
-      quantityDescription: candidate.quantityDescription,
-      estimatedGrams: estimated.grams,
-      confidence: 0.92,
-      sourceKind: resolvedWholeDish.sourceKind,
-      sourceLabel: resolvedWholeDish.sourceLabel,
-      matchMode: resolvedWholeDish.matchMode,
-      sourceStatus: resolvedWholeDish.sourceStatus,
-      amountBasisG: resolvedWholeDish.amountBasisG,
-      validationFlags: dedupeValidationFlags([
-        ...resolvedWholeDish.validationFlags,
-        ...estimated.validationFlags,
-        'whole_dish_db_override',
-      ]),
-      per100g: wholeDishPrepared.profile,
-      per100gMeta: wholeDishPrepared.meta,
-      totals: wholeDishTotals,
-      totalsMeta: wholeDishTotalsMeta,
-    },
-  ];
+  return {
+    items: rebalancedItems,
+    traces: resolved.map((entry) => entry.trace),
+  };
 }
 
 async function resolveDescriptionSegment(
   description: string,
   lookupResolver: NutritionLookupResolver
-): Promise<ParseFoodDescriptionOutput> {
-  const directlyResolvedFoods = await tryResolveDirectDescription(description, lookupResolver);
-  if (directlyResolvedFoods?.length) {
-    return directlyResolvedFoods;
+): Promise<{segment: ParseFoodDescriptionSegment; traces: WeightResolutionTrace[]}> {
+  try {
+    const directlyResolvedFoods = await tryResolveDirectDescription(description, lookupResolver);
+    if (directlyResolvedFoods?.length) {
+      const directCandidate =
+        extractWholeDishCandidate(description) ?? extractSingleFoodCandidate(description);
+
+      if (
+        directlyResolvedFoods.length === 1 &&
+        directlyResolvedFoods[0]?.sourceKind === 'recipe' &&
+        directCandidate?.foodName
+      ) {
+        const exactRecipeMatch = await lookupResolver(directCandidate.foodName, {
+          allowFuzzy: false,
+        });
+        if (exactRecipeMatch?.sourceKind === 'recipe') {
+          const recipeSegment = await resolveCompositeDishFromRecipe(
+            directCandidate,
+            exactRecipeMatch,
+            lookupResolver
+          );
+          if (recipeSegment) {
+            return {
+              segment: recipeSegment,
+              traces: [],
+            };
+          }
+        }
+      }
+
+      return {
+        segment: buildSegmentFromItems(
+          description,
+          directlyResolvedFoods,
+          directlyResolvedFoods.length === 1 && isCompositeFoodName(directlyResolvedFoods[0]!.foodName)
+            ? 'whole_dish_db'
+            : 'direct_items'
+        ),
+        traces: [],
+      };
+    }
+
+    const wholeDishCandidate = extractWholeDishCandidate(description);
+    if (wholeDishCandidate?.foodName) {
+      const exactWholeDishMatch = await lookupResolver(wholeDishCandidate.foodName, {
+        allowFuzzy: false,
+      });
+
+      if (exactWholeDishMatch?.sourceKind === 'recipe') {
+        const recipeSegment = await resolveCompositeDishFromRecipe(
+          wholeDishCandidate,
+          exactWholeDishMatch,
+          lookupResolver
+        );
+        if (recipeSegment) {
+          return {
+            segment: recipeSegment,
+            traces: [],
+          };
+        }
+      }
+
+      if (exactWholeDishMatch?.matchMode === 'exact') {
+        return {
+          segment: await buildWholeDishDbSegment(wholeDishCandidate, exactWholeDishMatch),
+          traces: [],
+        };
+      }
+
+      return {
+        segment: await resolveCompositeDishWithAiIngredients(
+          wholeDishCandidate,
+          lookupResolver
+        ),
+        traces: [],
+      };
+    }
+
+    const aiResolved = await resolveAiCandidates(description, lookupResolver);
+    return {
+      segment: buildSegmentFromItems(description, aiResolved.items, 'ai_items'),
+      traces: aiResolved.traces,
+    };
+  } catch (error) {
+    await recordRuntimeError({
+      scope: 'parse_food_description.segment',
+      code: 'segment_resolution_failed',
+      message: error instanceof Error ? error.message : String(error),
+      context: {description},
+    });
+    throw error;
   }
-
-  const wholeDishCandidate =
-    extractWholeDishCandidate(description) ??
-    (() => {
-      const candidate = extractSingleFoodCandidate(description);
-      return candidate?.foodName ? candidate : null;
-    })();
-  const wholeDishMatch = wholeDishCandidate?.foodName
-    ? await lookupResolver(wholeDishCandidate.foodName, {
-        allowFuzzy: true,
-      })
-    : null;
-
-  const candidates = await parseFoodCandidatesWithGemini(description);
-  const resolvedFoods = (await Promise.all(
-    candidates.map((candidate) => resolveCandidate(candidate, lookupResolver))
-  )).flat();
-  const targetTotalWeight = await determineTargetTotalWeight(description, resolvedFoods);
-  const rebalancedFoods = rebalanceResolvedFoods(resolvedFoods, targetTotalWeight);
-
-  if (!wholeDishCandidate?.foodName) {
-    return rebalancedFoods;
-  }
-
-  return maybeOverrideWithWholeDish(
-    description,
-    rebalancedFoods,
-    lookupResolver,
-    wholeDishMatch
-  );
 }
 
 export async function parseFoodDescription(
@@ -593,9 +487,42 @@ export async function parseFoodDescription(
   const lookupResolver = createNutritionLookupResolver();
   const segments = splitFoodDescriptionSegments(parsedInput.description);
   const effectiveSegments = segments.length > 1 ? segments : [parsedInput.description];
+  const segmentMemo = new Map<string, Promise<{segment: ParseFoodDescriptionSegment; traces: WeightResolutionTrace[]}>>();
 
   const segmentResults = await Promise.all(
-    effectiveSegments.map((segment) => resolveDescriptionSegment(segment, lookupResolver))
+    effectiveSegments.map(async (segment) => {
+      const key = segment.trim().toLowerCase();
+      if (!segmentMemo.has(key)) {
+        segmentMemo.set(key, resolveDescriptionSegment(segment, lookupResolver));
+      }
+      return segmentMemo.get(key)!;
+    })
   );
-  return ParseFoodDescriptionOutputSchema.parse(segmentResults.flat());
+
+  const resolvedSegments = segmentResults.map((result) => result.segment);
+  const items = resolvedSegments.flatMap((segment) => segment.items);
+  const totals = aggregateNutritionProfiles(
+    items.map((item) => ({
+      profile: item.totals,
+      meta: item.totalsMeta,
+    }))
+  );
+  const output = ParseFoodDescriptionOutputSchema.parse({
+    compositeDishName:
+      resolvedSegments.length === 1 ? resolvedSegments[0]?.compositeDishName ?? null : null,
+    totalNutrition: totals.profile,
+    totalNutritionMeta: totals.meta,
+    totalWeight: items.reduce((sum, item) => sum + item.estimatedGrams, 0),
+    overallConfidence: calculateOverallConfidence(items),
+    items,
+    segments: resolvedSegments,
+  });
+
+  await recordFoodParseTelemetry({
+    description: parsedInput.description,
+    output,
+    weightResolutionTraces: segmentResults.flatMap((result) => result.traces),
+  });
+
+  return output;
 }

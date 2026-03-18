@@ -1,8 +1,8 @@
-import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
+import type {ResolvedFoodItems} from '@/lib/food-contract';
 import {
-  COMPOSITE_FOOD_PATTERN,
   extractMultiFoodCandidates,
   extractSingleFoodCandidate,
+  isCompositeFoodName,
   sanitizeFoodName,
 } from '@/lib/food-text';
 import {cloneNutritionProfileMeta, scaleNutritionProfile} from '@/lib/nutrition-profile';
@@ -16,13 +16,13 @@ import {dedupeValidationFlags} from '@/lib/validation';
 export async function tryResolveDirectDescription(
   description: string,
   lookupResolver: NutritionLookupResolver = createNutritionLookupResolver()
-): Promise<ParseFoodDescriptionOutput | null> {
+): Promise<ResolvedFoodItems | null> {
   const multiCandidates = extractMultiFoodCandidates(description);
   if (multiCandidates?.length) {
     const resolvedFoods = await Promise.all(
       multiCandidates.map(async (candidate) => {
         const dbMatch = await lookupResolver(candidate.foodName, {
-          allowFuzzy: !COMPOSITE_FOOD_PATTERN.test(candidate.foodName),
+          allowFuzzy: !isCompositeFoodName(candidate.foodName),
         });
         if (!dbMatch) {
           return null;
@@ -63,7 +63,7 @@ export async function tryResolveDirectDescription(
     );
 
     return resolvedFoods.every(Boolean)
-      ? (resolvedFoods as ParseFoodDescriptionOutput)
+      ? (resolvedFoods as ResolvedFoodItems)
       : null;
   }
 
@@ -78,7 +78,7 @@ export async function tryResolveDirectDescription(
   }
 
   const dbMatch = await lookupResolver(foodName, {
-    allowFuzzy: true,
+    allowFuzzy: !isCompositeFoodName(foodName),
   });
   if (!dbMatch) {
     return null;

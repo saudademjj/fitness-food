@@ -46,13 +46,33 @@ refresh_if_materialized() {
   exists="$(run_psql -Atqc "SELECT 1 FROM pg_matviews WHERE schemaname = '${schema_name}' AND matviewname = '${view_name}'")"
 
   if [[ "$exists" == "1" ]]; then
-    run_psql -c "REFRESH MATERIALIZED VIEW ${schema_name}.${view_name};"
+    run_psql -c "REFRESH MATERIALIZED VIEW CONCURRENTLY ${schema_name}.${view_name};"
   else
     echo "Skipping ${schema_name}.${view_name}: not a materialized view."
   fi
 }
 
+should_refresh="$(
+  run_psql -Atqc "
+    SELECT COALESCE(
+      (
+        SELECT CASE WHEN refresh_pending THEN '1' ELSE '0' END
+        FROM app.materialized_view_refresh_state
+        WHERE scope = 'nutrition_runtime'
+        LIMIT 1
+      ),
+      '1'
+    );
+  " 2>/dev/null || printf '1'
+)"
+
+if [[ "${FORCE_REFRESH:-0}" != "1" && "$should_refresh" != "1" ]]; then
+  echo "Skipping refresh: nutrition runtime materialized views are not marked as pending."
+  exit 0
+fi
+
 refresh_if_materialized core app_food_profile_23
 refresh_if_materialized core app_recipe_profile_23
 refresh_if_materialized core app_catalog_profile_23
+run_psql -c "SELECT app.clear_materialized_view_refresh_pending('nutrition_runtime');"
 run_psql -c "SELECT app.bump_runtime_cache_state('lookup');"

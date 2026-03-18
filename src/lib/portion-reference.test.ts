@@ -78,3 +78,31 @@ databaseTest('estimateGrams uses generic heuristic fallback for unseen foods', a
   assert.ok(result.validationFlags.includes('portion_fallback_applied'));
   assert.equal(result.portion?.sourceLabel, '应用内通用回退估算');
 });
+
+databaseTest('estimateGrams uses the dedicated 麦乐鸡 portion rule for piece counts', async () => {
+  const result = await estimateGrams('麦乐鸡', '5块');
+
+  assert.equal(result.grams, 80);
+  assert.equal(result.portion?.matchedName, '麦乐鸡');
+  assert.ok(
+    result.validationFlags.includes('portion_reference_applied') ||
+      result.validationFlags.includes('portion_fallback_applied')
+  );
+});
+
+databaseTest('estimateGrams uses the dedicated 麦乐鸡 serving size for 一份', async () => {
+  const result = await estimateGrams('麦乐鸡', '一份');
+
+  assert.equal(result.grams, 80);
+  assert.equal(result.portion?.matchedName, '麦乐鸡');
+});
+
+databaseTest(
+  'estimateGrams does not let low-similarity matched names pollute chicken nugget portions',
+  async () => {
+    const result = await estimateGrams('鸡块', '5块', '鸡块（带浆粉）');
+
+    assert.notEqual(result.portion?.matchedName, '米线');
+    assert.ok(result.grams < 200);
+  }
+);

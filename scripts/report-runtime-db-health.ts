@@ -24,6 +24,15 @@ type SummaryRow = {
   app_recipe_macro_complete: number;
   app_recipe_exact_lookup_ready: number;
   app_recipe_fuzzy_lookup_ready: number;
+  nutrition_refresh_pending: boolean | null;
+};
+
+type ParseTelemetryRow = {
+  parse_events_24h: number;
+  avg_confidence_24h: number | null;
+  ai_fallback_items_24h: number | null;
+  total_items_24h: number | null;
+  runtime_composite_items_24h: number | null;
 };
 
 async function queryNamedCounts(
@@ -146,6 +155,13 @@ async function main(): Promise<void> {
             )
           )
       ) AS app_recipe_fuzzy_lookup_ready
+      ,
+      (
+        SELECT refresh_pending
+        FROM app.materialized_view_refresh_state
+        WHERE scope = 'nutrition_runtime'
+        LIMIT 1
+      ) AS nutrition_refresh_pending
   `);
 
   const summary = summaryResult.rows[0];
@@ -174,6 +190,21 @@ async function main(): Promise<void> {
     LIMIT 10
   `).catch(() => []);
 
+  const parseTelemetryResult = await pool
+    .query<ParseTelemetryRow>(`
+      SELECT
+        COUNT(*)::int AS parse_events_24h,
+        AVG(overall_confidence)::numeric AS avg_confidence_24h,
+        COALESCE(SUM(ai_fallback_item_count), 0)::int AS ai_fallback_items_24h,
+        COALESCE(SUM(item_count), 0)::int AS total_items_24h,
+        COALESCE(SUM(runtime_composite_item_count), 0)::int AS runtime_composite_items_24h
+      FROM app.food_parse_telemetry
+      WHERE created_at >= NOW() - INTERVAL '24 hours'
+    `)
+    .catch(() => ({rows: [] as ParseTelemetryRow[]}));
+
+  const parseTelemetry = parseTelemetryResult.rows[0] ?? null;
+
   const report = {
     generatedAt: new Date().toISOString(),
     summary: {
@@ -190,7 +221,27 @@ async function main(): Promise<void> {
       appRecipeMacroComplete: Number(summary.app_recipe_macro_complete ?? 0),
       appRecipeExactLookupReady: Number(summary.app_recipe_exact_lookup_ready ?? 0),
       appRecipeFuzzyLookupReady: Number(summary.app_recipe_fuzzy_lookup_ready ?? 0),
+      nutritionRefreshPending: Boolean(summary.nutrition_refresh_pending ?? false),
     },
+    parseTelemetry24h: parseTelemetry
+      ? {
+          parseEvents: Number(parseTelemetry.parse_events_24h ?? 0),
+          averageConfidence:
+            parseTelemetry.avg_confidence_24h === null
+              ? null
+              : Number(parseTelemetry.avg_confidence_24h),
+          aiFallbackRate:
+            Number(parseTelemetry.total_items_24h ?? 0) > 0
+              ? Number(
+                  (
+                    Number(parseTelemetry.ai_fallback_items_24h ?? 0) /
+                    Number(parseTelemetry.total_items_24h ?? 1)
+                  ).toFixed(4)
+                )
+              : null,
+          runtimeCompositeItems: Number(parseTelemetry.runtime_composite_items_24h ?? 0),
+        }
+      : null,
     portionSources,
     recentLookupMisses: lookupMisses,
   };

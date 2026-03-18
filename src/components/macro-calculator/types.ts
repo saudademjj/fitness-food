@@ -1,5 +1,4 @@
-
-import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
+import type {ResolvedFoodItem, ResolvedFoodItems} from '@/lib/food-contract';
 import {
   CORE_MACRO_KEYS,
   NUTRITION_PROFILE_KEYS,
@@ -16,7 +15,7 @@ import {
 } from '@/lib/nutrition-profile';
 import {getDateKeyFromTimestamp, isDateKey} from '@/lib/log-date';
 
-export type FoodLogEntry = ParseFoodDescriptionOutput[number] & {
+export type FoodLogEntry = ResolvedFoodItem & {
   id: string;
   timestamp: number;
   loggedOn?: string;
@@ -75,7 +74,7 @@ export function createEntryId(): string {
   return `entry_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function updateFoodWeight<T extends ParseFoodDescriptionOutput[number]>(
+export function updateFoodWeight<T extends ResolvedFoodItem>(
   food: T,
   grams: number
 ): T {

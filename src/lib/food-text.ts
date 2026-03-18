@@ -1,11 +1,15 @@
 export const DIRECT_PARSE_MAX_LENGTH = 64;
 export const MULTI_ITEM_SEPARATOR = /[，,、；;\/]/;
 export const COMPOSITE_FOOD_PATTERN =
-  /(炒饭|蛋炒饭|盖饭|拌饭|焖饭|烩饭|煲仔饭|焗饭|炒面|拌面|汤面|拉面|米线|河粉|炒粉|意面|三明治|汉堡|披萨|卷饼|卷|沙拉|套餐|便当|拼盘|汤|火锅|麻辣烫|冒菜|砂锅|小炒|炒菜|鸡丁|肉末|盖浇|.+炒.+|.+烧.+|.+煮.+|.+蒸.+|.+炖.+|.+焖.+|.+烤.+|.+炸.+|.+拌.+|.+煲.+|.+烩.+)/i;
+  /(炒饭|蛋炒饭|盖饭|拌饭|焖饭|烩饭|煲仔饭|焗饭|炒面|拌面|汤面|拉面|米线|河粉|炒粉|意面|三明治|汉堡|披萨|卷饼|沙拉|套餐|便当|拼盘|火锅|麻辣烫|冒菜|砂锅|小炒|炒菜|盖浇|咖喱饭|寿司|饭团|肉丝|肉片|肉末|蛋花汤|排骨汤|丸子汤)/i;
 export const UNSAFE_FUZZY_MATCH_PATTERN =
   /(婴儿|婴幼儿|快餐|三明治|卷饼|汤|罐装|填料|调味|混合|饼干|松饼|百吉饼|潜艇|咖喱|餐厅|冷冻|晚餐|早餐|幼儿|泥|面包|汉堡)/i;
 export const DANGEROUS_SUFFIX_PATTERN =
   /(醋|填料|浇头|布丁|卷|调味|调味料|调味粉|调味酱|婴儿食品|泥|果汁|饮料|奶昔|蘸料|酱|派)$/i;
+const COOKING_COMPOSITE_PATTERN =
+  /[\u4e00-\u9fffA-Za-z]{1,8}(炒|烧|煮|蒸|炖|焖|烤|炸|拌|煲|烩)[\u4e00-\u9fffA-Za-z]{1,8}/u;
+const NON_FOOD_COMPOSITE_PATTERN =
+  /(炒勺|炒锅|炒作|烧杯|烧瓶|煮锅|蒸箱|烤箱|炸锅|拌匀|炖锅|焖锅|煲锅|电饭煲)/i;
 
 const QUANTITY_PATTERN =
   /(?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)/g;
@@ -18,6 +22,7 @@ const CONNECTOR_RIGHT_QUANTITY_PATTERN =
   /^\s*(?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)/i;
 const ANY_QUANTITY_PATTERN =
   /(?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)/i;
+const INTRINSIC_CONNECTOR_DISH_PATTERN = /(汤|羹|煲)$/;
 
 function shouldSplitConnector(
   connector: string,
@@ -40,8 +45,10 @@ function shouldSplitConnector(
 
   if (
     /(和|跟)/.test(connector) &&
-    !COMPOSITE_FOOD_PATTERN.test(normalizedLeft) &&
-    !COMPOSITE_FOOD_PATTERN.test(normalizedRight) &&
+    !INTRINSIC_CONNECTOR_DISH_PATTERN.test(normalizedLeft) &&
+    !INTRINSIC_CONNECTOR_DISH_PATTERN.test(normalizedRight) &&
+    !isCompositeFoodName(normalizedLeft) &&
+    !isCompositeFoodName(normalizedRight) &&
     normalizedLeft.length <= 8 &&
     normalizedRight.length <= 8
   ) {
@@ -189,6 +196,22 @@ export function sanitizeFoodName(foodName: string): string {
     .trim();
 }
 
+export function isCompositeFoodName(foodName: string): boolean {
+  const normalizedFoodName = sanitizeFoodName(normalizeText(foodName));
+  if (!normalizedFoodName) {
+    return false;
+  }
+
+  if (NON_FOOD_COMPOSITE_PATTERN.test(normalizedFoodName)) {
+    return false;
+  }
+
+  return (
+    COMPOSITE_FOOD_PATTERN.test(normalizedFoodName) ||
+    COOKING_COMPOSITE_PATTERN.test(normalizedFoodName)
+  );
+}
+
 export function extractSingleFoodCandidate(description: string): ExtractedFoodCandidate | null {
   const stripped = stripContext(description);
 
@@ -233,7 +256,7 @@ export function extractWholeDishCandidate(
   const prefixMatch = stripped.match(PREFIX_QUANTITY_PATTERN);
   if (prefixMatch) {
     const foodName = sanitizeFoodName(prefixMatch[2] ?? '');
-    return COMPOSITE_FOOD_PATTERN.test(foodName)
+    return isCompositeFoodName(foodName)
       ? {
           foodName,
           quantityDescription: prefixMatch[1]?.trim() ?? '未知',
@@ -244,7 +267,7 @@ export function extractWholeDishCandidate(
   const suffixMatch = stripped.match(SUFFIX_QUANTITY_PATTERN);
   if (suffixMatch) {
     const foodName = sanitizeFoodName(suffixMatch[1] ?? '');
-    return COMPOSITE_FOOD_PATTERN.test(foodName)
+    return isCompositeFoodName(foodName)
       ? {
           foodName,
           quantityDescription: suffixMatch[2]?.trim() ?? '未知',
@@ -253,7 +276,7 @@ export function extractWholeDishCandidate(
   }
 
   const foodName = sanitizeFoodName(stripped.trim());
-  return COMPOSITE_FOOD_PATTERN.test(foodName)
+  return isCompositeFoodName(foodName)
     ? {
         foodName,
         quantityDescription: '未知',

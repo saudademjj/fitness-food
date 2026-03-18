@@ -1,7 +1,9 @@
 import {recordAiUsageTelemetry} from '@/lib/ai-usage-telemetry';
 import {buildNutritionProfileMeta} from '@/lib/nutrition-profile';
 import {
+  AiCompositeDishBreakdownSchema,
   AiParsedFoodItemsSchema,
+  type AiCompositeDishBreakdown,
   type AiParsedFoodItem,
 } from '@/lib/food-contract';
 import {
@@ -23,7 +25,7 @@ const SYSTEM_PROMPT = `
 3. 如果用户描述的是一道完整的菜（例如"辣椒炒肉"、"番茄炒蛋"、"宫保鸡丁"、"红烧排骨"、"清蒸鲈鱼"、"麻婆豆腐"），作为单个条目返回这道菜的整体名称，不要拆解成原料。
 4. 只有当描述涉及多种独立食物的组合餐、套餐、便当时（例如"一碗米饭加一个鸡腿和一碗汤"），才拆解成各自独立的条目。
 5. 估算每个条目这次实际吃下的总克重。
-6. 额外给出每100g完整 23 项营养，作为数据库未命中时的兜底值。
+6. 额外给出每100g 的 23 项营养兜底字段，但只有宏量营养必须给出；微量营养没有把握时必须返回 null，不能猜。
 
 要求：
 - 只返回 JSON 数组，不要解释，不要 Markdown。
@@ -39,14 +41,42 @@ const SYSTEM_PROMPT = `
   sodiumMg、potassiumMg、calciumMg、magnesiumMg、ironMg、zincMg、
   vitaminAMcg、vitaminCMg、vitaminDMcg、vitaminEMg、vitaminKMcg、
   thiaminMg、riboflavinMg、niacinMg、vitaminB6Mg、vitaminB12Mcg、folateMcg。
-- 对微量营养素没有把握时，优先给出保守、常见、不过度极端的估计；不要编造特别高的 vitaminD、vitaminK、folate 等数值。
-- 对植物性蔬菜、水果、米饭、面、面包等食物，vitaminB12 和 vitaminD 通常接近 0；没有明确强化或动物性来源证据时，不要给出显著数值。
+- 对 19 项微量营养素没有把握时，直接返回 null；不要为了凑字段而猜值。
+- 对植物性蔬菜、水果、米饭、面、面包等食物，vitaminB12 和 vitaminD 没有可靠证据时返回 null，不要给出显著数值。
 - 一句话里提到多种独立食物时才拆成多个元素，例如"两个包子和一杯豆浆"拆为包子和豆浆两个条目。
 - 单道菜名如"辣椒炒肉"、"番茄烧牛腩"、"鱼香肉丝"直接作为一个完整条目返回，不要拆解成原料。
 - 像"火腿蛋炒饭"这类食物名，直接作为一个条目"火腿蛋炒饭"返回即可，不要拆成米饭+鸡蛋+火腿。
 - 如果用户提供了总克重，例如"400g火腿蛋炒饭"，直接使用该克重，不需要拆解。
 - 对品牌名、口语化描述做适度归一，例如"小肉包"可归一为"鲜肉包子"。
 `;
+
+const COMPOSITE_DISH_SYSTEM_PROMPT = `
+你是中文饮食记录助手，当前任务是把单道复合菜拆成可查库原料。
+
+目标：
+1. 输入一定是一道单独的成品菜或复合主食，例如“辣椒炒肉”“番茄炒蛋”“宫保鸡丁”“火腿蛋炒饭”。
+2. 输出最常见、最容易命中营养数据库的原料名，不要输出调味步骤、品牌名或口语化废话。
+3. 给出每个原料在这道菜中的实际克重，所有原料 estimatedGrams 之和必须接近整道菜总重量。
+4. 对影响热量或钠含量明显的原料，要包含食用油、盐、酱油等基础调味项。
+5. 每个原料只返回宏量营养兜底：energyKcal、proteinGrams、carbohydrateGrams、fatGrams。
+6. dishName 必须是原菜名或更标准的同义菜名；totalEstimatedGrams 必须是整道菜总重量。
+
+要求：
+- 只返回 JSON 对象，不要解释，不要 Markdown。
+- ingredients 里的 ingredientName 必须是单个原料，不要再写“辣椒炒肉”这种整菜。
+- estimatedGrams 必须是该原料在这道菜里的总克重，不是每100g。
+- confidence 用 0 到 1 表示你对该原料名和克重的把握。
+- fallbackPer100g 只包含宏量营养 4 项；拿不准时给保守中位值，不要输出极端值。
+- 如果用户给了明确总重量，例如“400g辣椒炒肉”，totalEstimatedGrams 应尽量贴近该重量，ingredients 总克重也要贴近。
+- 如果是炒菜，通常会包含少量油；如果是带汁菜，可以包含少量盐或酱油；但不要无意义地堆很多调料。
+`;
+
+const NULLABLE_NON_NEGATIVE_SCHEMA = {
+  anyOf: [
+    {type: 'number', minimum: 0},
+    {type: 'null'},
+  ],
+} as const;
 
 const RESPONSE_JSON_SCHEMA = {
   type: 'array',
@@ -75,29 +105,29 @@ const RESPONSE_JSON_SCHEMA = {
       fallbackPer100g: {
         type: 'object',
         properties: {
-          energyKcal: {type: 'number', minimum: 0},
-          proteinGrams: {type: 'number', minimum: 0},
-          carbohydrateGrams: {type: 'number', minimum: 0},
-          fatGrams: {type: 'number', minimum: 0},
-          fiberGrams: {type: 'number', minimum: 0},
-          sugarsGrams: {type: 'number', minimum: 0},
-          sodiumMg: {type: 'number', minimum: 0},
-          potassiumMg: {type: 'number', minimum: 0},
-          calciumMg: {type: 'number', minimum: 0},
-          magnesiumMg: {type: 'number', minimum: 0},
-          ironMg: {type: 'number', minimum: 0},
-          zincMg: {type: 'number', minimum: 0},
-          vitaminAMcg: {type: 'number', minimum: 0},
-          vitaminCMg: {type: 'number', minimum: 0},
-          vitaminDMcg: {type: 'number', minimum: 0},
-          vitaminEMg: {type: 'number', minimum: 0},
-          vitaminKMcg: {type: 'number', minimum: 0},
-          thiaminMg: {type: 'number', minimum: 0},
-          riboflavinMg: {type: 'number', minimum: 0},
-          niacinMg: {type: 'number', minimum: 0},
-          vitaminB6Mg: {type: 'number', minimum: 0},
-          vitaminB12Mcg: {type: 'number', minimum: 0},
-          folateMcg: {type: 'number', minimum: 0},
+          energyKcal: NULLABLE_NON_NEGATIVE_SCHEMA,
+          proteinGrams: NULLABLE_NON_NEGATIVE_SCHEMA,
+          carbohydrateGrams: NULLABLE_NON_NEGATIVE_SCHEMA,
+          fatGrams: NULLABLE_NON_NEGATIVE_SCHEMA,
+          fiberGrams: NULLABLE_NON_NEGATIVE_SCHEMA,
+          sugarsGrams: NULLABLE_NON_NEGATIVE_SCHEMA,
+          sodiumMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          potassiumMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          calciumMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          magnesiumMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          ironMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          zincMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          vitaminAMcg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          vitaminCMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          vitaminDMcg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          vitaminEMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          vitaminKMcg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          thiaminMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          riboflavinMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          niacinMg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          vitaminB6Mg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          vitaminB12Mcg: NULLABLE_NON_NEGATIVE_SCHEMA,
+          folateMcg: NULLABLE_NON_NEGATIVE_SCHEMA,
         },
         required: [
           'energyKcal',
@@ -136,6 +166,77 @@ const RESPONSE_JSON_SCHEMA = {
     ],
     additionalProperties: false,
   },
+};
+
+const COMPOSITE_RESPONSE_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    dishName: {
+      type: 'string',
+    },
+    totalEstimatedGrams: {
+      type: 'number',
+      minimum: 1,
+    },
+    confidence: {
+      type: 'number',
+      minimum: 0,
+      maximum: 1,
+    },
+    cookingMethod: {
+      anyOf: [{type: 'string'}, {type: 'null'}],
+    },
+    ingredients: {
+      type: 'array',
+      minItems: 1,
+      items: {
+        type: 'object',
+        properties: {
+          ingredientName: {
+            type: 'string',
+          },
+          estimatedGrams: {
+            type: 'number',
+            minimum: 1,
+          },
+          confidence: {
+            type: 'number',
+            minimum: 0,
+            maximum: 1,
+          },
+          optional: {
+            type: 'boolean',
+          },
+          fallbackPer100g: {
+            type: 'object',
+            properties: {
+              energyKcal: NULLABLE_NON_NEGATIVE_SCHEMA,
+              proteinGrams: NULLABLE_NON_NEGATIVE_SCHEMA,
+              carbohydrateGrams: NULLABLE_NON_NEGATIVE_SCHEMA,
+              fatGrams: NULLABLE_NON_NEGATIVE_SCHEMA,
+            },
+            required: [
+              'energyKcal',
+              'proteinGrams',
+              'carbohydrateGrams',
+              'fatGrams',
+            ],
+            additionalProperties: false,
+          },
+        },
+        required: [
+          'ingredientName',
+          'estimatedGrams',
+          'confidence',
+          'optional',
+          'fallbackPer100g',
+        ],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['dishName', 'totalEstimatedGrams', 'confidence', 'ingredients'],
+  additionalProperties: false,
 };
 
 type GeminiResponse = {
@@ -403,6 +504,185 @@ export async function parseFoodCandidatesWithGemini(
   return requestGeminiJsonArray(
     `请拆解这句饮食描述，并输出约定的 JSON 数组：\n${description}`,
     SYSTEM_PROMPT,
+    2048
+  );
+}
+
+function normalizeCompositeDishBreakdown(
+  breakdown: AiCompositeDishBreakdown
+): AiCompositeDishBreakdown {
+  const totalIngredientWeight = breakdown.ingredients.reduce(
+    (sum, ingredient) => sum + ingredient.estimatedGrams,
+    0
+  );
+  const targetWeight =
+    breakdown.totalEstimatedGrams > 0
+      ? breakdown.totalEstimatedGrams
+      : totalIngredientWeight;
+
+  if (!totalIngredientWeight || Math.abs(totalIngredientWeight - targetWeight) <= 5) {
+    return breakdown;
+  }
+
+  return {
+    ...breakdown,
+    totalEstimatedGrams: targetWeight,
+    ingredients: breakdown.ingredients.map((ingredient, index) => {
+      const scaledValue = (ingredient.estimatedGrams / totalIngredientWeight) * targetWeight;
+      const estimatedGrams =
+        index === breakdown.ingredients.length - 1
+          ? Math.max(
+              1,
+              Math.round(
+                targetWeight -
+                  breakdown.ingredients
+                    .slice(0, -1)
+                    .reduce(
+                      (sum, currentIngredient) =>
+                        sum +
+                        Math.max(
+                          1,
+                          Math.round(
+                            (currentIngredient.estimatedGrams / totalIngredientWeight) *
+                              targetWeight
+                          )
+                        ),
+                      0
+                    )
+              )
+            )
+          : Math.max(1, Math.round(scaledValue));
+
+      return {
+        ...ingredient,
+        estimatedGrams,
+      };
+    }),
+  };
+}
+
+async function requestGeminiJsonObject(
+  prompt: string,
+  systemPrompt: string,
+  responseJsonSchema: object,
+  maxOutputTokens: number
+): Promise<AiCompositeDishBreakdown> {
+  const startedAt = Date.now();
+  let lastError: unknown;
+  let lastUsageMetadata:
+    | {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        totalTokenCount?: number;
+      }
+    | undefined;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(
+        `${getGeminiApiBaseUrl()}/models/${getGeminiModel()}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': getGeminiApiKey(),
+          },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{text: systemPrompt}],
+            },
+            contents: [
+              {
+                role: 'user',
+                parts: [{text: prompt}],
+              },
+            ],
+            generationConfig: {
+              temperature: 0,
+              maxOutputTokens,
+              responseMimeType: 'application/json',
+              responseJsonSchema,
+              thinkingConfig: {
+                thinkingLevel: 'low',
+              },
+            },
+          }),
+          cache: 'no-store',
+          signal: controller.signal,
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `Gemini request failed with ${response.status}: ${errorText.slice(0, 240)}`
+        );
+      }
+
+      const payload = (await response.json()) as GeminiResponse;
+      lastUsageMetadata = payload.usageMetadata ?? lastUsageMetadata;
+      if (payload.error?.message) {
+        throw new Error(payload.error.message);
+      }
+
+      const text = extractTextContent(payload);
+      const jsonPayload = extractJsonPayload(text);
+      const parsed = AiCompositeDishBreakdownSchema.parse(jsonPayload);
+      const normalized = normalizeCompositeDishBreakdown(parsed);
+
+      await recordAiUsageTelemetry({
+        provider: 'gemini',
+        model: getGeminiModel(),
+        requestKind: 'parse_composite_dish',
+        inputPreview: prompt.slice(0, 220),
+        promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
+        completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
+        totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+        durationMs: Date.now() - startedAt,
+        attemptCount: attempt,
+        success: true,
+      });
+      return normalized;
+    } catch (error) {
+      lastError = error;
+      if (attempt === MAX_ATTEMPTS) {
+        break;
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, RETRY_DELAY_MS * Math.max(1, 2 ** (attempt - 1)))
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  await recordAiUsageTelemetry({
+    provider: 'gemini',
+    model: getGeminiModel(),
+    requestKind: 'parse_composite_dish',
+    inputPreview: prompt.slice(0, 220),
+    promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
+    completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
+    totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+    durationMs: Date.now() - startedAt,
+    attemptCount: MAX_ATTEMPTS,
+    success: false,
+    errorMessage: lastError instanceof Error ? lastError.message : 'Gemini request failed.',
+  });
+  throw lastError instanceof Error ? lastError : new Error('Gemini request failed.');
+}
+
+export async function parseCompositeDishWithGemini(
+  description: string
+): Promise<AiCompositeDishBreakdown> {
+  return requestGeminiJsonObject(
+    `请把这道复合菜拆成原料 JSON 对象：\n${description}`,
+    COMPOSITE_DISH_SYSTEM_PROMPT,
+    COMPOSITE_RESPONSE_JSON_SCHEMA,
     2048
   );
 }

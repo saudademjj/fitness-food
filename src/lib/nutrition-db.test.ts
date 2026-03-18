@@ -4,6 +4,7 @@ import {config} from 'dotenv';
 
 import {getDbPool} from '@/lib/db';
 import {
+  buildLookupVariants,
   isSafeFuzzyCandidate,
   lookupNutritionByNameExact,
   lookupNutritionByNameFuzzy,
@@ -16,9 +17,15 @@ config({path: '.env.local'});
 function createCatalogRow(overrides: Partial<CatalogRow>): CatalogRow {
   return {
     entity_type: 'food',
+    entity_id: 'test-id',
+    entity_slug: null,
     food_name_zh: '测试食物',
     food_name_en: null,
     source_system: 'unit-test',
+    source_item_id: 'source-item',
+    food_group: 'unit-test',
+    source_category: 'unit-test',
+    source_subcategory: 'unit-test',
     energy_kcal: 0,
     protein_grams: 0,
     carbohydrate_grams: 0,
@@ -127,6 +134,20 @@ test('isSafeFuzzyCandidate rejects short two-character mismatches to specific cu
   assert.equal(isSafeFuzzyCandidate('鸡肉', row), false);
 });
 
+test('isSafeFuzzyCandidate rejects short three-character mismatches with different semantic tails', () => {
+  const row = createCatalogRow({
+    food_name_zh: '鸡腿肉',
+    fuzzy_score: 0.9,
+  });
+
+  assert.equal(isSafeFuzzyCandidate('鸡胸肉', row), false);
+});
+
+test('buildLookupVariants expands common Chinese ingredient synonyms', () => {
+  assert.deepEqual(buildLookupVariants('青椒'), ['青椒', '辣椒', '尖椒', '甜椒', '彩椒']);
+  assert.deepEqual(buildLookupVariants('猪肉馅'), ['猪肉馅', '猪肉', '猪肉末']);
+});
+
 const hasDatabase = Boolean(process.env.DATABASE_URL);
 const databaseTest = hasDatabase ? test : test.skip;
 
@@ -187,3 +208,51 @@ databaseTest('lookupNutritionByNameExact resolves 麦旋风 through the seeded C
       (result?.matchedName ?? '').toLowerCase().includes('mcflurry')
   );
 });
+
+databaseTest(
+  'lookupNutritionByNameExact rejects the bad Coke row and returns a sane cola profile',
+  async () => {
+    const result = await lookupNutritionByNameExact('可口可乐');
+
+    assert.ok(result);
+    assert.equal(result?.matchMode, 'exact');
+    assert.ok((result?.per100g.energyKcal ?? 0) >= 40 && (result?.per100g.energyKcal ?? 0) <= 45);
+    assert.ok(
+      (result?.per100g.carbohydrateGrams ?? 0) >= 9 &&
+        (result?.per100g.carbohydrateGrams ?? 0) <= 11
+    );
+    assert.notEqual(result?.sourceItemId, '6928804011142');
+    assert.ok(
+      result?.validationFlags.includes('brand_curated_override') ||
+        result?.validationFlags.includes('db_candidate_rejected')
+    );
+  }
+);
+
+databaseTest(
+  'lookupNutritionByNameExact keeps regular cola alias behavior for 可乐',
+  async () => {
+    const result = await lookupNutritionByNameExact('可乐');
+
+    assert.ok(result);
+    assert.equal(result?.matchMode, 'exact');
+    assert.ok((result?.per100g.energyKcal ?? 0) >= 40 && (result?.per100g.energyKcal ?? 0) <= 45);
+    assert.ok(
+      (result?.per100g.carbohydrateGrams ?? 0) >= 9 &&
+        (result?.per100g.carbohydrateGrams ?? 0) <= 11
+    );
+  }
+);
+
+databaseTest(
+  'lookupNutritionByNameExact resolves 麦乐鸡 through the curated brand override',
+  async () => {
+    const result = await lookupNutritionByNameExact('麦乐鸡');
+
+    assert.ok(result);
+    assert.equal(result?.matchMode, 'exact');
+    assert.ok((result?.matchedName ?? '').includes('麦乐鸡'));
+    assert.ok((result?.per100g.energyKcal ?? 0) >= 250 && (result?.per100g.energyKcal ?? 0) <= 280);
+    assert.ok(result?.validationFlags.includes('brand_curated_override'));
+  }
+);

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   extractMultiFoodCandidates,
+  isCompositeFoodName,
   normalizeItemSeparators,
   sanitizeFoodName,
   splitFoodDescriptionSegments,
@@ -56,4 +57,10 @@ test('splitFoodDescriptionSegments keeps intrinsic 和 inside composite dish nam
 
 test('sanitizeFoodName keeps intrinsic leading 和 for food names such as 和牛', () => {
   assert.equal(sanitizeFoodName('和牛汉堡'), '和牛汉堡');
+});
+
+test('isCompositeFoodName avoids obvious non-food verb compounds', () => {
+  assert.equal(isCompositeFoodName('炒勺'), false);
+  assert.equal(isCompositeFoodName('炒作'), false);
+  assert.equal(isCompositeFoodName('辣椒炒肉'), true);
 });

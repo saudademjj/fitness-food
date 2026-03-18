@@ -12,7 +12,7 @@ import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
 
 interface FoodInputFormProps {
   onFoodsParsed: (payload: {
-    foods: ParseFoodDescriptionOutput;
+    result: ParseFoodDescriptionOutput;
     description: string;
   }) => void;
 }
@@ -28,9 +28,9 @@ export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
     setIsParsing(true);
     try {
       const results = await parseDescriptionAction(description);
-      if (results && results.length > 0) {
+      if (results && results.items.length > 0) {
         onFoodsParsed({
-          foods: results,
+          result: results,
           description,
         });
         setDescription('');

@@ -1,8 +1,8 @@
 [Unit]
-Description=Daily refresh for Fitness Food materialized views
+Description=Hourly pending-check refresh for Fitness Food materialized views
 
 [Timer]
-OnCalendar=*-*-* 04:10:00
+OnCalendar=hourly
 Persistent=true
 Unit=fitness-food-refresh.service
 

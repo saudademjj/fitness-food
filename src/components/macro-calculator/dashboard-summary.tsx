@@ -5,9 +5,11 @@ import {Card, CardContent} from '@/components/ui/card';
 import {Progress} from '@/components/ui/progress';
 import {
   AlertTriangle,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Droplets,
+  Eye,
   Flame,
   Leaf,
   Shield,
@@ -36,6 +38,13 @@ const FEATURED_KEYS: GoalFieldKey[] = [
   'carbohydrateGrams',
   'fatGrams',
 ];
+
+const FEATURED_ICON_BG: Record<string, string> = {
+  energyKcal: 'bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400',
+  proteinGrams: 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400',
+  carbohydrateGrams: 'bg-lime-100 text-lime-600 dark:bg-lime-900/30 dark:text-lime-400',
+  fatGrams: 'bg-sky-100 text-sky-600 dark:bg-sky-900/30 dark:text-sky-400',
+};
 
 function formatDisplayValue(
   value: number | null,
@@ -78,155 +87,147 @@ export function DashboardSummary({totals, totalsMeta, goals}: DashboardSummaryPr
       key === 'fiberGrams' ||
       key === 'potassiumMg' ||
       key === 'vitaminCMg' ||
-      key === 'vitaminKMcg' ||
-      key === 'folateMcg'
+      key === 'vitaminAMcg'
     ) {
       return <Leaf className="h-4 w-4" />;
     }
-    if (key === 'sugarsGrams' || key === 'sodiumMg') {
+    if (key === 'sodiumMg' || key === 'sugarsGrams') {
       return <AlertTriangle className="h-4 w-4" />;
-    }
-    if (getNutrientFieldMeta(key).group === 'vitamins') {
-      return <Sparkles className="h-4 w-4" />;
     }
     return <Shield className="h-4 w-4" />;
   };
 
-  const getProgress = (current: number | null, goal: number) => {
-    if (current === null || isNaN(current) || goal <= 0) {
-      return 0;
-    }
-
-    return Math.min((current / goal) * 100, 100);
-  };
-
-  const renderStatusHint = (key: GoalFieldKey) => {
-    const meta = totalsMeta[key];
-    if (meta.status === 'missing') {
-      return '该营养素当前没有可靠数据';
-    }
-    if (meta.status === 'partial') {
-      return '已汇总已知值，仍有部分记录缺失';
-    }
-    if (meta.status === 'estimated') {
-      return meta.source === 'ai'
-        ? '该值包含 AI 估算'
-        : '该值包含模型换算或 AI 补齐';
-    }
-    return '已完成数据库可测量值汇总';
-  };
-
   const renderNutrientCard = (key: GoalFieldKey) => {
+    const meta = getNutrientFieldMeta(key);
+    const value = coalesceNutritionValue(totals[key]);
     const goal = goals[key];
-    const field = allFields.find((item) => item.key === key)!;
-    const value = totals[key];
-    const valueStatus = totalsMeta[key].status;
-    const safeValue = coalesceNutritionValue(value);
-    const percent = getProgress(value, goal);
-    const isLimit = field.goalDirection === 'limit';
-    const isExceeded = isLimit && goal > 0 && safeValue > goal;
+    const pct = goal > 0 && value !== null ? Math.min((value / goal) * 100, 100) : 0;
 
     return (
-      <Card
-        key={field.label}
-        className="overflow-hidden border-none bg-white/50 shadow-sm backdrop-blur-sm"
-      >
+      <Card key={key} className="border-none shadow-sm bg-card/80 dark:bg-card/50">
         <CardContent className="p-3">
-          <div className="mb-1.5 flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              <div className={`rounded-full p-1 ${field.tone}/10 text-primary`}>
-                {renderIcon(key)}
-              </div>
-              <h3 className="font-headline text-xs font-semibold">{field.label}</h3>
-            </div>
-            <div className="text-right">
-              <span className="font-bold text-xs">{formatDisplayValue(value, valueStatus)}</span>
-              <span className="ml-0.5 text-[9px] text-muted-foreground">
-                / {goal} {field.unit}
-              </span>
-            </div>
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            {renderIcon(key)}
+            <span>{meta.label}</span>
           </div>
-          <Progress value={percent} className={`h-1 ${isExceeded ? 'bg-rose-500' : field.tone}`} />
-          <div className="mt-2 text-[10px] text-muted-foreground">
-            {valueStatus === 'missing'
-              ? '缺失'
-              : isLimit
-                ? isExceeded
-                  ? `已超过上限 ${Math.abs(safeValue - goal).toFixed(1)} ${field.unit}`
-                  : `距离上限 ${(goal - safeValue).toFixed(1)} ${field.unit}`
-                : `已完成 ${percent.toFixed(0)}%`}
+          <div className="mt-1 text-sm font-bold text-foreground">
+            {formatDisplayValue(value, totalsMeta[key].status)}
+            <span className="ml-1 text-[10px] font-normal text-muted-foreground">
+              / {goal} {meta.unit}
+            </span>
           </div>
-          <div className="mt-1 text-[10px] text-muted-foreground/80">{renderStatusHint(key)}</div>
+          <Progress value={pct} className={`mt-2 h-1.5 ${meta.tone}`} />
         </CardContent>
       </Card>
     );
   };
 
   return (
-    <div className="mb-8">
-      <div className="rounded-[1.75rem] border border-border/70 bg-white/70 p-4 shadow-sm backdrop-blur-sm sm:p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <p className="text-sm font-semibold text-primary">今日营养进度</p>
-            <p className="text-xs text-muted-foreground">
-              默认先看核心四项，展开后再查看完整 23 项营养目标与状态。
-            </p>
-          </div>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={() => setShowDetails((current) => !current)}
-            className="h-auto self-start rounded-full px-0 text-xs font-medium text-primary hover:bg-transparent"
-          >
-            {showDetails ? (
-              <ChevronUp className="mr-1 h-4 w-4" />
-            ) : (
-              <ChevronDown className="mr-1 h-4 w-4" />
-            )}
-            {showDetails ? '收起今日 23 项详情' : '展开今日 23 项详情'}
-          </Button>
+    <div className="mb-8 animate-fade-in-up">
+      <div className="flex flex-col gap-4">
+        {/* Featured macros */}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {FEATURED_KEYS.map((key) => {
+            const meta = getNutrientFieldMeta(key);
+            const value = coalesceNutritionValue(totals[key]);
+            const goal = goals[key];
+            const pct = goal > 0 && value !== null ? Math.min((value / goal) * 100, 100) : 0;
+
+            return (
+              <Card key={key} className="group relative overflow-hidden border-none shadow-md bg-card/90 dark:bg-card/60 animate-fade-in-up">
+                {/* Decorative icon background */}
+                <div className="absolute -right-2 -top-2 opacity-[0.07] transition-opacity group-hover:opacity-[0.12]">
+                  <div className="text-[64px]">
+                    {renderIcon(key)}
+                  </div>
+                </div>
+                <CardContent className="relative p-4">
+                  <div className={`mb-2 inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${FEATURED_ICON_BG[key] ?? ''}`}>
+                    {renderIcon(key)}
+                    {meta.label}
+                  </div>
+                  <div className="text-2xl font-bold text-foreground">
+                    {formatDisplayValue(value, totalsMeta[key].status)}
+                    <span className="ml-1 text-xs font-normal text-muted-foreground">
+                      {meta.unit}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <Progress value={pct} className={`h-2 flex-1 animate-progress-glow ${meta.tone}`} />
+                    <span className="text-xs font-semibold text-muted-foreground tabular-nums">
+                      {Math.round(pct)}%
+                    </span>
+                  </div>
+                  <div className="mt-1 text-[10px] text-muted-foreground">
+                    目标 {goal} {meta.unit}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
 
-        <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(240px,1fr)]">
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            {FEATURED_KEYS.map((key) => renderNutrientCard(key))}
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <Card className="border-none bg-emerald-50/80 shadow-sm">
+        {/* Status cards + expand toggle */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="grid flex-1 grid-cols-3 gap-3">
+            <Card className="border-none bg-emerald-50/80 dark:bg-emerald-900/20 shadow-sm animate-fade-in-up stagger-1">
               <CardContent className="p-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
+                  <CheckCircle2 className="h-3 w-3" />
                   已测量
                 </div>
-                <div className="mt-1 text-2xl font-bold text-emerald-900">{measuredCount}</div>
-                <div className="text-[10px] text-emerald-700/80">数据库可直接累计</div>
+                <div className="mt-1 text-2xl font-bold text-emerald-900 dark:text-emerald-300">{measuredCount}</div>
+                <div className="text-[10px] text-emerald-700/80 dark:text-emerald-400/70">数据库可靠值</div>
               </CardContent>
             </Card>
-            <Card className="border-none bg-amber-50/80 shadow-sm">
+            <Card className="border-none bg-amber-50/80 dark:bg-amber-900/20 shadow-sm animate-fade-in-up stagger-2">
               <CardContent className="p-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-700">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                  <Eye className="h-3 w-3" />
                   待复核
                 </div>
-                <div className="mt-1 text-2xl font-bold text-amber-900">{reviewCount}</div>
-                <div className="text-[10px] text-amber-700/80">含估算或部分缺失</div>
+                <div className="mt-1 text-2xl font-bold text-amber-900 dark:text-amber-300">{reviewCount}</div>
+                <div className="text-[10px] text-amber-700/80 dark:text-amber-400/70">含估算或部分缺失</div>
               </CardContent>
             </Card>
-            <Card className="border-none bg-slate-100/90 shadow-sm">
+            <Card className="border-none bg-slate-100/90 dark:bg-slate-800/40 shadow-sm animate-fade-in-up stagger-3">
               <CardContent className="p-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-400">
+                  <AlertTriangle className="h-3 w-3" />
                   缺失
                 </div>
-                <div className="mt-1 text-2xl font-bold text-slate-900">{missingCount}</div>
-                <div className="text-[10px] text-slate-600/80">当前没有可靠值</div>
+                <div className="mt-1 text-2xl font-bold text-slate-900 dark:text-slate-300">{missingCount}</div>
+                <div className="text-[10px] text-slate-600/80 dark:text-slate-400/70">当前没有可靠值</div>
               </CardContent>
             </Card>
           </div>
         </div>
       </div>
 
-      {showDetails ? (
-        <div className="mt-4 space-y-4">
-          {GOAL_FIELD_GROUPS.map((group) => (
-            <div key={group.id}>
+      {/* Expand/collapse details */}
+      <div className="mt-3 flex justify-center">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setShowDetails(!showDetails)}
+          className="rounded-full text-xs text-muted-foreground hover:text-primary"
+        >
+          {showDetails ? (
+            <>
+              收起详情 <ChevronUp className="ml-1 h-3.5 w-3.5" />
+            </>
+          ) : (
+            <>
+              展开 23 项营养详情 <ChevronDown className="ml-1 h-3.5 w-3.5" />
+            </>
+          )}
+        </Button>
+      </div>
+
+      {showDetails && (
+        <div className="mt-4 space-y-4 animate-slide-expand">
+          {GOAL_FIELD_GROUPS.map((group, groupIndex) => (
+            <div key={group.id} className={`animate-fade-in-up stagger-${Math.min(groupIndex + 1, 6)}`}>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 {group.label}
               </div>
@@ -236,7 +237,7 @@ export function DashboardSummary({totals, totalsMeta, goals}: DashboardSummaryPr
             </div>
           ))}
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

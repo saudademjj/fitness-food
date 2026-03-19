@@ -422,11 +422,11 @@ export default function MacroHelperPage() {
 
   return (
     <div className="min-h-screen bg-background pb-20">
-      <header className="sticky top-0 z-10 mb-6 w-full border-b border-secondary/20 bg-white/70 px-6 py-4 backdrop-blur-md">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <div className="rounded-lg bg-primary p-1.5 shadow-inner">
-              <Salad className="h-6 w-6 text-white" />
+      <header className="sticky top-0 z-10 mb-6 w-full border-b border-border/40 bg-background/80 px-6 py-4 backdrop-blur-lg">
+        <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="rounded-xl bg-gradient-to-br from-primary to-primary/80 p-2 shadow-md">
+              <Salad className="h-6 w-6 text-primary-foreground" />
             </div>
             <div>
               <h1 className="font-headline text-2xl font-black tracking-tight text-primary">
@@ -440,7 +440,7 @@ export default function MacroHelperPage() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="outline" className="rounded-full">
@@ -545,13 +545,13 @@ export default function MacroHelperPage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-4 sm:px-6">
+      <main className="mx-auto max-w-4xl px-4 pt-2 sm:px-6">
         <DashboardSummary totals={totals.profile} totalsMeta={totals.meta} goals={goals} />
 
         <div className="mx-auto max-w-3xl">
           <FoodInputForm onFoodsParsed={handleFoodsParsed} />
 
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-secondary/20 bg-white/80 px-4 py-3 shadow-sm">
+          <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-border/40 bg-card/60 dark:bg-card/30 px-4 py-3 shadow-sm sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <History className="h-4 w-4" />
               <span>{viewer ? '云端历史' : '本地草稿'}</span>
@@ -567,7 +567,7 @@ export default function MacroHelperPage() {
                 type="date"
                 value={selectedDate}
                 onChange={(e) => setSelectedDate(e.target.value)}
-                className="w-[160px] bg-white"
+                className="w-[160px] bg-card dark:bg-card/60"
               />
               <Button
                 variant="outline"
@@ -591,8 +591,19 @@ export default function MacroHelperPage() {
           </div>
 
           {isLoadingEntries ? (
-            <div className="rounded-2xl border border-secondary/20 bg-white/60 px-4 py-8 text-center text-sm text-muted-foreground">
-              正在加载历史记录...
+            <div className="space-y-4">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="rounded-2xl bg-card/60 p-5">
+                  <div className="h-5 w-1/3 rounded-lg animate-shimmer" />
+                  <div className="mt-3 h-3 w-2/3 rounded-lg animate-shimmer" />
+                  <div className="mt-2 h-3 w-1/2 rounded-lg animate-shimmer" />
+                  <div className="mt-4 grid grid-cols-4 gap-3">
+                    {[1, 2, 3, 4].map((j) => (
+                      <div key={j} className="h-8 rounded-lg animate-shimmer" />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : (
             <FoodLogList
@@ -636,6 +647,10 @@ export default function MacroHelperPage() {
       ) : null}
 
       <Toaster />
+
+      <footer className="mt-16 border-t border-border/30 py-6 text-center text-xs text-muted-foreground/60">
+        营养助手 Pro · 数据仅供参考，不构成医学建议
+      </footer>
     </div>
   );
 }

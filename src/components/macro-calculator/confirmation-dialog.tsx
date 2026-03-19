@@ -114,7 +114,8 @@ export function ConfirmationDialog({
             {parsedResult.segments.map((segment, index) => (
               <div
                 key={`${segment.sourceDescription}-${index}`}
-                className="rounded-2xl border border-primary/10 bg-primary/[0.03] p-4"
+                className="rounded-2xl border border-primary/10 bg-primary/[0.03] p-4 animate-scale-in"
+                style={{animationDelay: `${index * 0.05}s`}}
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -126,22 +127,22 @@ export function ConfirmationDialog({
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    <div className="rounded-xl bg-white px-3 py-2 text-xs">
+                    <div className="rounded-xl bg-card dark:bg-card/60 px-3 py-2 text-xs">
                       热量 {segment.totalNutrition.energyKcal?.toFixed(1) ?? '--'} kcal
                     </div>
-                    <div className="rounded-xl bg-white px-3 py-2 text-xs">
+                    <div className="rounded-xl bg-card dark:bg-card/60 px-3 py-2 text-xs">
                       蛋白 {segment.totalNutrition.proteinGrams?.toFixed(1) ?? '--'} g
                     </div>
-                    <div className="rounded-xl bg-white px-3 py-2 text-xs">
+                    <div className="rounded-xl bg-card dark:bg-card/60 px-3 py-2 text-xs">
                       碳水 {segment.totalNutrition.carbohydrateGrams?.toFixed(1) ?? '--'} g
                     </div>
-                    <div className="rounded-xl bg-white px-3 py-2 text-xs">
+                    <div className="rounded-xl bg-card dark:bg-card/60 px-3 py-2 text-xs">
                       脂肪 {segment.totalNutrition.fatGrams?.toFixed(1) ?? '--'} g
                     </div>
                   </div>
                 </div>
                 {segment.ingredientBreakdown.length > 0 ? (
-                  <details className="mt-3 rounded-xl border border-border/70 bg-white/80 p-3">
+                  <details className="mt-3 rounded-xl border border-border/70 bg-card/80 dark:bg-card/40 p-3">
                     <summary className="cursor-pointer text-sm font-medium text-primary">
                       展开原料明细
                     </summary>
@@ -149,9 +150,9 @@ export function ConfirmationDialog({
                       {segment.ingredientBreakdown.map((ingredient, ingredientIndex) => (
                         <div
                           key={`${ingredient.foodName}-${ingredientIndex}`}
-                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-secondary/20 px-3 py-2 text-xs"
+                          className="ml-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border-l-2 border-primary/20 bg-secondary/20 px-3 py-2 text-xs"
                         >
-                          <div className="font-medium text-primary">
+                          <div className="font-medium text-foreground">
                             {ingredient.foodName}
                           </div>
                           <div className="text-muted-foreground">
@@ -169,7 +170,7 @@ export function ConfirmationDialog({
               return (
               <div
                 key={`${food.foodName}-${idx}`}
-                className="space-y-4 rounded-2xl border border-secondary/20 bg-secondary/10 p-4"
+                className={`space-y-4 rounded-2xl border border-secondary/20 bg-secondary/10 p-4 animate-scale-in stagger-${Math.min(idx + 1, 6)}`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div className="space-y-2">
@@ -179,7 +180,7 @@ export function ConfirmationDialog({
                     <Input
                       value={food.foodName}
                       onChange={(e) => handleNameUpdate(idx, e.target.value)}
-                      className="bg-white text-lg font-bold text-primary"
+                      className="bg-card dark:bg-card/60 text-lg font-bold text-foreground"
                     />
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge
@@ -218,7 +219,7 @@ export function ConfirmationDialog({
                         type="number"
                         value={food.estimatedGrams}
                         onChange={(e) => handleWeightUpdate(idx, parseFloat(e.target.value) || 0)}
-                        className="bg-white"
+                        className="bg-card dark:bg-card/60"
                       />
                       <Button
                         variant="ghost"
@@ -232,13 +233,14 @@ export function ConfirmationDialog({
                   </div>
                 </div>
 
-                <div className="space-y-2">
+                {/* Weight slider with visual separation */}
+                <div className="space-y-2 rounded-xl bg-card/60 dark:bg-card/30 p-3">
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
                     <span className="flex items-center gap-1">
                       <Scale className="h-3 w-3" />
                       调整克重
                     </span>
-                    <span>{food.estimatedGrams}g</span>
+                    <span className="rounded-full bg-primary/10 px-2 py-0.5 font-semibold text-primary">{food.estimatedGrams}g</span>
                   </div>
                   <Slider
                     min={0}
@@ -249,6 +251,7 @@ export function ConfirmationDialog({
                   />
                 </div>
 
+                {/* Nutrition preview cards */}
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                   {[
                     {
@@ -288,19 +291,19 @@ export function ConfirmationDialog({
                       icon: <Droplets className="h-3 w-3" />,
                     },
                   ].map((field) => (
-                    <div key={field.label} className="rounded-xl bg-white p-3 shadow-sm">
+                    <div key={field.label} className="rounded-xl bg-card dark:bg-card/50 p-3 shadow-sm">
                       <Label className="text-[10px] font-bold text-muted-foreground flex items-center gap-1">
                         {field.icon}
                         {field.label}
                       </Label>
-                      <div className="mt-1 text-sm font-semibold text-primary">
+                      <div className="mt-1 text-sm font-semibold text-foreground">
                         {field.value}
                       </div>
                     </div>
                   ))}
                 </div>
 
-                <details className="rounded-xl border border-border/70 bg-white/70 p-4">
+                <details className="rounded-xl border border-border/70 bg-card/70 dark:bg-card/40 p-4">
                   <summary className="cursor-pointer text-sm font-medium text-primary">
                     查看 23 项营养详情
                   </summary>
@@ -321,7 +324,7 @@ export function ConfirmationDialog({
           </div>
         </ScrollArea>
 
-        <DialogFooter className="border-t p-6 pt-2 gap-2 sm:gap-0">
+        <DialogFooter className="border-t border-border/50 p-6 pt-4 gap-3 sm:gap-2">
           <Button variant="outline" onClick={onClose} className="rounded-full">
             取消
           </Button>

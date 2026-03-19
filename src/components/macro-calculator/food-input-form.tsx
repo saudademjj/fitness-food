@@ -1,4 +1,3 @@
-
 'use client';
 
 import React, { useState } from 'react';
@@ -58,7 +57,9 @@ export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
   };
 
   return (
-    <Card className="border-none shadow-md mb-8">
+    <Card className="border-none shadow-md mb-8 overflow-hidden animate-fade-in-up">
+      {/* Gradient top border decoration */}
+      <div className="h-1 w-full bg-gradient-to-r from-primary via-accent to-primary" />
       <CardHeader className="pb-3">
         <CardTitle className="text-xl flex items-center gap-2">
           <Sparkles className="h-5 w-5 text-accent" />
@@ -74,12 +75,12 @@ export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
             placeholder="今天吃了什么？"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            className="min-h-[100px] bg-secondary/30 border-none focus-visible:ring-accent"
+            className="min-h-[100px] bg-secondary/30 border-none focus-visible:ring-accent transition-transform duration-200 focus:scale-[1.01]"
           />
-          <Button 
-            onClick={handleParse} 
+          <Button
+            onClick={handleParse}
             disabled={isParsing || !description.trim()}
-            className="w-full bg-primary hover:bg-primary/90 text-primary-foreground font-semibold py-6 rounded-xl shadow-md transition-all active:scale-95"
+            className="w-full bg-gradient-to-r from-primary to-primary/80 hover:from-primary/90 hover:to-primary text-primary-foreground font-semibold py-6 rounded-xl shadow-md transition-all active:scale-95 hover:shadow-lg"
           >
             {isParsing ? (
               <>
@@ -93,6 +94,9 @@ export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
               </>
             )}
           </Button>
+          <p className="text-center text-xs text-muted-foreground/60">
+            试试：一碗米饭、两个煎蛋、一杯牛奶
+          </p>
         </div>
       </CardContent>
     </Card>

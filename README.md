@@ -297,6 +297,11 @@ DATABASE_URL=postgresql://localhost:5432/foodetl_local
 # DashScope / Qwen（AI 兜底解析需要）
 DASHSCOPE_API_KEY=your_dashscope_api_key
 QWEN_MODEL=qwen3.5-plus
+QWEN_ENABLE_THINKING=true
+QWEN_ENABLE_SEARCH=true
+QWEN_FORCE_SEARCH=false
+QWEN_SEARCH_STRATEGY=turbo
+QWEN_REQUEST_TIMEOUT_MS=45000
 
 # Magic Link 认证（可选，不配置则仅支持匿名模式）
 APP_BASE_URL=http://localhost:9002
@@ -336,6 +341,11 @@ npm run dev
 | `DATABASE_URL` | 是 | PostgreSQL 连接字符串 |
 | `DASHSCOPE_API_KEY` | 是 | 阿里云百炼 DashScope API 密钥，用于 AI 兜底解析 |
 | `QWEN_MODEL` | 否 | Qwen 模型名，默认 `qwen3.5-plus` |
+| `QWEN_ENABLE_THINKING` | 否 | 是否开启推理思考，默认 `true` |
+| `QWEN_ENABLE_SEARCH` | 否 | 是否开启联网搜索能力，默认 `true` |
+| `QWEN_FORCE_SEARCH` | 否 | 是否强制每次请求都联网，默认 `false` |
+| `QWEN_SEARCH_STRATEGY` | 否 | 联网搜索策略，默认 `turbo`；更深度的检索可改为 `max` |
+| `QWEN_REQUEST_TIMEOUT_MS` | 否 | Qwen 请求超时毫秒数；开启思考/联网时建议至少 `45000` |
 | `APP_BASE_URL` | 否 | 应用基础 URL，Magic Link 认证需要 |
 | `SMTP_HOST` | 否 | SMTP 服务器地址 |
 | `SMTP_PORT` | 否 | SMTP 端口 |

@@ -7,6 +7,11 @@
 ```env
 DASHSCOPE_API_KEY=<your_dashscope_key>
 QWEN_MODEL=qwen3.5-plus
+QWEN_ENABLE_THINKING=true
+QWEN_ENABLE_SEARCH=true
+QWEN_FORCE_SEARCH=false
+QWEN_SEARCH_STRATEGY=turbo
+QWEN_REQUEST_TIMEOUT_MS=45000
 ```
 
 如果你需要显式覆盖 API 地址，也可以额外设置：
@@ -14,6 +19,14 @@ QWEN_MODEL=qwen3.5-plus
 ```env
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ```
+
+说明：
+
+- `QWEN_ENABLE_THINKING=true` 会开启推理思考
+- `QWEN_ENABLE_SEARCH=true` 会开启联网搜索能力
+- `QWEN_FORCE_SEARCH=false` 表示只在模型判断有必要时联网，避免每次饮食解析都额外增加延迟与成本
+- `QWEN_SEARCH_STRATEGY=turbo` 更适合当前饮食解析这种低延迟场景；如果你更看重检索深度，可以改成 `max`
+- `QWEN_REQUEST_TIMEOUT_MS=45000` 给思考和联网请求预留更长超时时间，避免品牌食品场景下过早超时
 
 ## 2. 本地开发连接 PostgreSQL
 

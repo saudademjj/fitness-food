@@ -11,9 +11,12 @@ import {
   validateMacroNutrients,
 } from '@/lib/validation';
 
-const REQUEST_TIMEOUT_MS = 25_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
+const ENHANCED_REQUEST_TIMEOUT_MS = 45_000;
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 1_200;
+const NETWORK_SEARCH_HINT_PATTERN =
+  /([A-Za-z]{2,}|可口可乐|百事|雪碧|芬达|元气森林|外星人|红牛|瑞幸|星巴克|麦当劳|麦旋风|麦乐鸡|肯德基|汉堡王|必胜客|塔斯汀|喜茶|奈雪|霸王茶姬|蜜雪冰城|古茗|沪上阿姨|茶百道|新品|限定|联名|能量饮料|蛋白棒|即食鸡胸肉)/i;
 
 const SYSTEM_PROMPT = `
 你是中文饮食记录助手。
@@ -48,6 +51,8 @@ const SYSTEM_PROMPT = `
 - 像"火腿蛋炒饭"这类食物名，直接作为一个条目"火腿蛋炒饭"返回即可，不要拆成米饭+鸡蛋+火腿。
 - 如果用户提供了总克重，例如"400g火腿蛋炒饭"，直接使用该克重，不需要拆解。
 - 对品牌名、口语化描述做适度归一，例如"小肉包"可归一为"鲜肉包子"。
+- 对品牌食品、包装食品、连锁餐饮、新品或季节限定口味，如有必要可联网核对净含量、规格、份量或公开营养信息。
+- 联网结果若互相矛盾，优先采用更保守、更常见的份量；没有可靠信息时不要编造，直接降低 confidence。
 `;
 
 const COMPOSITE_DISH_SYSTEM_PROMPT = `
@@ -69,6 +74,7 @@ const COMPOSITE_DISH_SYSTEM_PROMPT = `
 - fallbackPer100g 只包含宏量营养 4 项；拿不准时给保守中位值，不要输出极端值。
 - 如果用户给了明确总重量，例如“400g辣椒炒肉”，totalEstimatedGrams 应尽量贴近该重量，ingredients 总克重也要贴近。
 - 如果是炒菜，通常会包含少量油；如果是带汁菜，可以包含少量盐或酱油；但不要无意义地堆很多调料。
+- 对连锁餐饮或明显带品牌的成品菜，必要时可联网参考公开配料、份量或营养信息，但不要直接照搬营销文案。
 `;
 
 const NULLABLE_NON_NEGATIVE_SCHEMA = {
@@ -282,6 +288,89 @@ function getQwenModel(): string {
   return process.env.QWEN_MODEL ?? 'qwen3.5-plus';
 }
 
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+
+  if (['1', 'true', 'yes', 'on'].includes(raw)) {
+    return true;
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(raw)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function readPositiveIntegerEnv(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function getQwenSearchStrategy(): 'turbo' | 'max' {
+  const raw = process.env.QWEN_SEARCH_STRATEGY?.trim().toLowerCase();
+  if (raw === 'max') {
+    return 'max';
+  }
+
+  // Keep the structured JSON path on non-agent search modes and bias to lower latency.
+  return 'turbo';
+}
+
+function getQwenRequestTimeoutMs(): number {
+  const override = readPositiveIntegerEnv('QWEN_REQUEST_TIMEOUT_MS');
+  if (override) {
+    return override;
+  }
+
+  const enableThinking = readBooleanEnv('QWEN_ENABLE_THINKING', true);
+  const enableSearch = readBooleanEnv('QWEN_ENABLE_SEARCH', true);
+  return enableThinking || enableSearch
+    ? ENHANCED_REQUEST_TIMEOUT_MS
+    : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+function buildQwenRequestOptions(allowSearch: boolean) {
+  const enableThinking = readBooleanEnv('QWEN_ENABLE_THINKING', true);
+  const thinkingBudget = enableThinking
+    ? readPositiveIntegerEnv('QWEN_THINKING_BUDGET')
+    : undefined;
+  const enableSearch = allowSearch && readBooleanEnv('QWEN_ENABLE_SEARCH', true);
+  const forcedSearch = enableSearch
+    ? readBooleanEnv('QWEN_FORCE_SEARCH', false)
+    : false;
+  const enableSearchExtension = enableSearch
+    ? readBooleanEnv('QWEN_ENABLE_SEARCH_EXTENSION', false)
+    : false;
+
+  return {
+    enable_thinking: enableThinking,
+    ...(thinkingBudget ? {thinking_budget: thinkingBudget} : {}),
+    ...(enableSearch
+      ? {
+          enable_search: true,
+          search_options: {
+            forced_search: forcedSearch,
+            search_strategy: getQwenSearchStrategy(),
+            enable_search_extension: enableSearchExtension,
+          },
+        }
+      : {}),
+  };
+}
+
+function shouldUseNetworkSearch(description: string): boolean {
+  return NETWORK_SEARCH_HINT_PATTERN.test(description);
+}
+
 function createJsonSchemaResponseFormat(name: string, schema: object) {
   return {
     type: 'json_schema' as const,
@@ -334,7 +423,10 @@ function extractJsonPayload(text: string): unknown {
 async function requestQwenJsonArray(
   prompt: string,
   systemPrompt: string,
-  maxOutputTokens: number
+  maxOutputTokens: number,
+  options?: {
+    allowSearch?: boolean;
+  }
 ): Promise<AiParsedFoodItem[]> {
   const startedAt = Date.now();
   let lastError: unknown;
@@ -343,7 +435,7 @@ async function requestQwenJsonArray(
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), getQwenRequestTimeoutMs());
 
     try {
       const response = await fetch(
@@ -356,9 +448,9 @@ async function requestQwenJsonArray(
           },
           body: JSON.stringify({
             model: getQwenModel(),
-            enable_thinking: false,
             temperature: 0,
             max_tokens: maxOutputTokens,
+            ...buildQwenRequestOptions(options?.allowSearch ?? true),
             messages: [
               {
                 role: 'system',
@@ -497,7 +589,10 @@ export async function parseFoodCandidatesWithQwen(
   return requestQwenJsonArray(
     `请拆解这句饮食描述，并输出约定的 JSON 数组：\n${description}`,
     SYSTEM_PROMPT,
-    2048
+    2048,
+    {
+      allowSearch: shouldUseNetworkSearch(description),
+    }
   );
 }
 
@@ -558,7 +653,10 @@ async function requestQwenJsonObject(
   prompt: string,
   systemPrompt: string,
   responseJsonSchema: object,
-  maxOutputTokens: number
+  maxOutputTokens: number,
+  options?: {
+    allowSearch?: boolean;
+  }
 ): Promise<AiCompositeDishBreakdown> {
   const startedAt = Date.now();
   let lastError: unknown;
@@ -566,7 +664,7 @@ async function requestQwenJsonObject(
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), getQwenRequestTimeoutMs());
 
     try {
       const response = await fetch(
@@ -579,9 +677,9 @@ async function requestQwenJsonObject(
           },
           body: JSON.stringify({
             model: getQwenModel(),
-            enable_thinking: false,
             temperature: 0,
             max_tokens: maxOutputTokens,
+            ...buildQwenRequestOptions(options?.allowSearch ?? true),
             messages: [
               {
                 role: 'system',
@@ -670,7 +768,10 @@ export async function parseCompositeDishWithQwen(
     `请把这道复合菜拆成原料 JSON 对象：\n${description}`,
     COMPOSITE_DISH_SYSTEM_PROMPT,
     COMPOSITE_RESPONSE_JSON_SCHEMA,
-    2048
+    2048,
+    {
+      allowSearch: shouldUseNetworkSearch(description),
+    }
   );
 }
 

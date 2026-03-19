@@ -293,6 +293,11 @@ DATABASE_URL=postgresql://localhost:5432/foodetl_local
 # DashScope / Qwen (required for AI fallback)
 DASHSCOPE_API_KEY=your_dashscope_api_key
 QWEN_MODEL=qwen3.5-plus
+QWEN_ENABLE_THINKING=true
+QWEN_ENABLE_SEARCH=true
+QWEN_FORCE_SEARCH=false
+QWEN_SEARCH_STRATEGY=turbo
+QWEN_REQUEST_TIMEOUT_MS=45000
 
 # Magic Link Auth (optional -- anonymous mode if not configured)
 APP_BASE_URL=http://localhost:9002

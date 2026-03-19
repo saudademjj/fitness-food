@@ -2,67 +2,138 @@
   English | <a href="./README.md">简体中文</a>
 </div>
 
-# Fitness-Food (Diet Management & AI Nutrition Analysis System)
+# Fitness-Food -- Diet Management & AI Nutrition Analysis System
 
 ![Next.js](https://img.shields.io/badge/Next.js-15.5-000000?style=flat-square&logo=next.js)
 ![React](https://img.shields.io/badge/React-19.0-61DAFB?style=flat-square&logo=react)
 ![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-3.4-06B6D4?style=flat-square&logo=tailwind-css)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql)
-![AI](https://img.shields.io/badge/AI-Enabled-brightgreen?style=flat-square)
+![AI](https://img.shields.io/badge/Gemini_AI-Enabled-brightgreen?style=flat-square)
 
-An intelligent full-stack diet tracking and nutrition analysis application. It combines intuitive data visualization with Large Language Model (LLM) semantic analysis to simplify daily nutrition logging and provide precise dietary feedback for fitness and health goals.
+Fitness-Food is a diet management system that combines AI natural-language parsing, PostgreSQL-backed nutrition lookup, and interactive nutrition tracking. The runtime prioritizes direct database matches for simple food descriptions, invokes Gemini only when natural-language parsing is genuinely needed, and supports runtime composite-dish aggregation with full 23-field nutrition output.
 
-## 🏛️ Engineering & Technical Analysis
+## System Highlights
 
-### 1. Modern Full-stack Architecture
-- **Next.js 15 (App Router)**: The core routing logic is built on Next.js 15. By leveraging Server Components, we offload complex database queries to the server, significantly reducing client-side JS execution overhead.
-- **React 19 Concurrent Mode**: Utilizing the latest React 19 features, the system maintains high interface responsiveness even during frequent interactions like chart rendering and form validation.
+- Simple single-food descriptions hit PostgreSQL first, avoiding unnecessary model calls
+- Gemini is reserved for complex descriptions, food decomposition, and conservative fallback estimation
+- Composite dishes follow a `recipe / AI ingredients -> per-ingredient DB lookup -> runtime aggregation` pipeline
+- The UI tracks complete 23-field nutrition groups including potassium, zinc, vitamin A/C/D/B12, and folate
+- Weight adjustments in the confirmation dialog are recalculated locally without spending extra model budget
+- Runtime observability covers lookup misses, parse telemetry, error telemetry, and materialized-view refresh state
 
-### 2. AI-Powered Ingestion Pipeline
-Traditional logging systems require manual food searches, which is often inefficient. This project introduces an **AI Semantic Parser**:
-- **Logic Flow**: Natural language input -> Backend AI parser identifies food items and approximate quantities -> Calorie and macronutrient estimation based on built-in DBs or LLM knowledge.
-- **Prompt Engineering**: Located in `src/ai`, our system prompts are meticulously designed for standardized and high-accuracy nutritional decomposition.
+## Lookup Priority
 
-### 3. Data Visualization Engineering
-Integrated **Recharts** for real-time monitoring dashboards:
-- **Macronutrient Dashboard**: Doughnut charts (Pie Charts) provide real-time feedback on daily intake ratios, guiding users towards balanced nutrition.
-- **Dynamic Trend Analysis**: Smooth line charts correlate intake with weight fluctuations, supporting dynamic time-range filtering.
+1. `recipe_alias` exact match to a standard recipe
+2. `canonical_food_alias` exact match to a canonical food
+3. Direct `app_catalog_profile_23.food_name_zh` match
+4. Gemini fallback with conservative validation and value clamping
 
-## 📂 Core Directory Structure
+## Runtime Nutrition Pipeline
+
+- `core.portion_reference` provides canonical Chinese serving-size references and unit conversions
+- Safe `pg_trgm` fuzzy matching replaces dangerous `ILIKE '%term%'` substring lookups
+- Runtime validation rejects obviously inconsistent DB candidates in strict categories, falling back to curated brand nutrition where needed
+- `app.food_log_item.per100g_profile` and `app.food_log_item.totals_profile` store complete 23-field nutrition JSON
+- `app.lookup_miss_telemetry` maintains a feedback loop for alias and ETL cleanup
+- `app.food_parse_telemetry`, `app.runtime_error_telemetry`, and `app.materialized_view_refresh_state` support production health checks and refresh orchestration
+
+## Technical Architecture
+
+### Frontend
+
+- Next.js 15 App Router + React 19 Server Components
+- Tailwind CSS 3.4 responsive layout
+- shadcn/ui component library (built on Radix UI)
+- Form validation: React Hook Form + Zod
+- Chart visualization: Recharts
+
+### Backend
+
+- Next.js Server Actions (type-safe server operations)
+- PostgreSQL 16 + pg_trgm extension
+- Materialized views for high-frequency query acceleration
+- Gemini AI natural-language food parsing engine
+
+### AI Parsing Engine
+
+- Multi-level prompt templates: simple foods, composite dishes, portion estimation
+- Conservative validation strategy: nutrient value clamping, outlier rejection
+- Parse telemetry: records input/output and latency for every AI invocation
+
+## Directory Structure
 
 ```text
 fitness-food/
 ├── src/
-│   ├── ai/             # Core AI logic, prompt templates, and data normalization
-│   ├── app/            # Next.js 15 pages, layouts, and strongly-typed API endpoints
-│   ├── components/     # UI primitives, business dashboards, and Recharts wrappers
-│   ├── lib/            # Edge-optimized DB connection pools and core utilities
-│   └── hooks/          # Data flow, SWR synchronization, and state persistence
-├── db/                 # SQL initialization, schema definitions, and seed data
-├── deploy/             # Environmental orchestration for rapid deployment
-└── package.json        # Comprehensive dependency and lifecycle management
+│   ├── ai/             # AI parsing engine, prompt templates, and nutrition fallback logic
+│   ├── app/            # Next.js 15 pages, layouts, and typed Server Actions
+│   ├── components/     # UI components and nutrition dashboard modules
+│   ├── lib/            # DB lookup, validation, runtime aggregation, and utilities
+│   └── hooks/          # Data flow management and state helpers
+├── db/                 # SQL migrations, reports, and refresh scripts
+├── deploy/             # Deployment config and systemd assets
+├── docs/               # Project documentation
+└── package.json        # Dependencies and lifecycle scripts
 ```
 
-## 🚀 Quick Start for Developers
+## Quick Start
 
-### 1. Requirements
+### Prerequisites
+
 - Node.js >= 20
-- PostgreSQL >= 16
+- PostgreSQL >= 16 (with pg_trgm extension enabled)
 
-### 2. Deployment
+### Install
+
 ```bash
-# Install dependencies
+git clone https://github.com/saudademjj/fitness-food.git
+cd fitness-food
 npm install
+```
 
-# Configure .env.local
-# DATABASE_URL=postgresql://user:password@localhost:5432/fitness_food
+### Database Bootstrap
 
-# Initialize Database Schema
-npm run db:setup
+1. Run migrations:
 
-# Launch High-Performance Dev Environment
+```bash
+psql "$DATABASE_URL" -f db/migrations/20260316_food_system_upgrade.sql
+psql "$DATABASE_URL" -f db/migrations/20260316_nutrition_profile23_upgrade.sql
+psql "$DATABASE_URL" -f db/migrations/20260317_nutrition_runtime_hardening.sql
+psql "$DATABASE_URL" -f db/migrations/20260317_runtime_composite_observability.sql
+psql "$DATABASE_URL" -f db/migrations/20260319_runtime_lookup_brand_safety.sql
+```
+
+2. Refresh materialized views:
+
+```bash
+bash ./db/refresh_materialized_views.sh
+```
+
+### Start Development Server
+
+```bash
 npm run dev
 ```
 
+Visit `http://localhost:9002` to use the application.
+
+### Other Commands
+
+```bash
+npm run build        # Production build
+npm run test         # Run tests
+npm run typecheck    # Type checking
+npm run lint         # Linting
+```
+
+## Runtime Health Check
+
+```bash
+npm run report:runtime-db    # Generate runtime database health report
+```
+
+This command checks materialized view refresh state, lookup miss statistics, and error telemetry summaries.
+
 ## License
+
 MIT License

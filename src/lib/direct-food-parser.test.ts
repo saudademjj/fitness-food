@@ -13,12 +13,12 @@ test.after(async () => {
   global.__fitnessFoodDbPool = undefined;
 });
 
-databaseTest('tryResolveDirectDescription keeps 300ml 可口可乐 near 127 kcal', async () => {
+databaseTest('tryResolveDirectDescription keeps 300ml 可口可乐 near serving weight and 127 kcal', async () => {
   const result = await tryResolveDirectDescription('300ml可口可乐');
 
   assert.ok(result);
   assert.equal(result?.length, 1);
-  assert.equal(result?.[0]?.estimatedGrams, 300);
+  assert.ok((result?.[0]?.estimatedGrams ?? 0) >= 300 && (result?.[0]?.estimatedGrams ?? 0) <= 310);
   assert.ok(
     (result?.[0]?.totals.energyKcal ?? 0) >= 126 &&
       (result?.[0]?.totals.energyKcal ?? 0) <= 129

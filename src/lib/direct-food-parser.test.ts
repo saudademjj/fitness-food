@@ -4,11 +4,9 @@ import {config} from 'dotenv';
 
 import {getDbPool} from '@/lib/db';
 import {tryResolveDirectDescription} from '@/lib/direct-food-parser';
+import {databaseTest} from '@/lib/test-database';
 
 config({path: '.env.local'});
-
-const hasDatabase = Boolean(process.env.DATABASE_URL);
-const databaseTest = hasDatabase ? test : test.skip;
 
 test.after(async () => {
   await getDbPool().end().catch(() => undefined);

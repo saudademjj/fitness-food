@@ -11,6 +11,7 @@ import {
   mapRowToLookupResult,
   type CatalogRow,
 } from '@/lib/nutrition-db';
+import {databaseTest} from '@/lib/test-database';
 
 config({path: '.env.local'});
 
@@ -147,9 +148,6 @@ test('buildLookupVariants expands common Chinese ingredient synonyms', () => {
   assert.deepEqual(buildLookupVariants('青椒'), ['青椒', '辣椒', '尖椒', '甜椒', '彩椒']);
   assert.deepEqual(buildLookupVariants('猪肉馅'), ['猪肉馅', '猪肉', '猪肉末']);
 });
-
-const hasDatabase = Boolean(process.env.DATABASE_URL);
-const databaseTest = hasDatabase ? test : test.skip;
 
 test.after(async () => {
   await getDbPool().end().catch(() => undefined);

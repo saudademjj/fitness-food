@@ -8,12 +8,9 @@ import {
   applyPreparationNutritionAdjustments,
   estimateGrams,
 } from '@/lib/portion-reference';
+import {databaseTest} from '@/lib/test-database';
 
 config({path: '.env.local'});
-
-const hasDatabase = Boolean(process.env.DATABASE_URL);
-
-const databaseTest = hasDatabase ? test : test.skip;
 
 test.after(async () => {
   await getDbPool().end().catch(() => undefined);

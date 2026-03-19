@@ -239,26 +239,23 @@ const COMPOSITE_RESPONSE_JSON_SCHEMA = {
   additionalProperties: false,
 };
 
-type GeminiResponse = {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
+type QwenUsageMetadata = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+};
+
+type QwenChatCompletionResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string | null;
     };
-    finishReason?: string;
+    finish_reason?: string | null;
   }>;
-  promptFeedback?: {
-    blockReason?: string;
-  };
   error?: {
     message?: string;
   };
-  usageMetadata?: {
-    promptTokenCount?: number;
-    candidatesTokenCount?: number;
-    totalTokenCount?: number;
-  };
+  usage?: QwenUsageMetadata;
 };
 
 type CandidateValidationIssue = {
@@ -267,49 +264,51 @@ type CandidateValidationIssue = {
   issues: string[];
 };
 
-function getGeminiApiKey(): string {
-  const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_GENAI_API_KEY;
+function getDashScopeApiKey(): string {
+  const apiKey = process.env.DASHSCOPE_API_KEY ?? process.env.BAILIAN_API_KEY;
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY is not configured.');
+    throw new Error('DASHSCOPE_API_KEY is not configured.');
   }
   return apiKey;
 }
 
-function getGeminiApiBaseUrl(): string {
-  return (process.env.GEMINI_API_BASE_URL ?? 'https://generativelanguage.googleapis.com/v1beta').replace(
-    /\/$/,
-    ''
-  );
+function getDashScopeApiBaseUrl(): string {
+  return (
+    process.env.DASHSCOPE_BASE_URL ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+  ).replace(/\/$/, '');
 }
 
-function getGeminiModel(): string {
-  return process.env.GEMINI_MODEL ?? 'gemini-3-flash-preview';
+function getQwenModel(): string {
+  return process.env.QWEN_MODEL ?? 'qwen3.5-plus';
 }
 
-function extractTextContent(payload: GeminiResponse): string {
-  const parts = payload.candidates?.[0]?.content?.parts ?? [];
-  const text = parts
-    .map((part) => part.text ?? '')
-    .join('')
-    .trim();
+function createJsonSchemaResponseFormat(name: string, schema: object) {
+  return {
+    type: 'json_schema' as const,
+    json_schema: {
+      name,
+      strict: true,
+      schema,
+    },
+  };
+}
+
+function extractTextContent(payload: QwenChatCompletionResponse): string {
+  const text = payload.choices?.[0]?.message?.content?.trim();
 
   if (text) {
     return text;
   }
 
-  if (payload.promptFeedback?.blockReason) {
-    throw new Error(`Gemini blocked the request: ${payload.promptFeedback.blockReason}`);
-  }
-
   throw new Error(
-    `Gemini returned an empty response${payload.candidates?.[0]?.finishReason ? ` (${payload.candidates[0].finishReason})` : ''}.`
+    `Qwen returned an empty response${payload.choices?.[0]?.finish_reason ? ` (${payload.choices[0].finish_reason})` : ''}.`
   );
 }
 
 function extractJsonPayload(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error('Gemini returned an empty JSON payload.');
+    throw new Error('Qwen returned an empty JSON payload.');
   }
 
   try {
@@ -329,10 +328,10 @@ function extractJsonPayload(text: string): unknown {
     return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
   }
 
-  throw new Error('Unable to extract a JSON array from Gemini response.');
+  throw new Error('Unable to extract JSON from Qwen response.');
 }
 
-async function requestGeminiJsonArray(
+async function requestQwenJsonArray(
   prompt: string,
   systemPrompt: string,
   maxOutputTokens: number
@@ -340,13 +339,7 @@ async function requestGeminiJsonArray(
   const startedAt = Date.now();
   let lastError: unknown;
   let retryPromptSuffix = '';
-  let lastUsageMetadata:
-    | {
-        promptTokenCount?: number;
-        candidatesTokenCount?: number;
-        totalTokenCount?: number;
-      }
-    | undefined;
+  let lastUsageMetadata: QwenUsageMetadata | undefined;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
@@ -354,32 +347,32 @@ async function requestGeminiJsonArray(
 
     try {
       const response = await fetch(
-        `${getGeminiApiBaseUrl()}/models/${getGeminiModel()}:generateContent`,
+        `${getDashScopeApiBaseUrl()}/chat/completions`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-goog-api-key': getGeminiApiKey(),
+            Authorization: `Bearer ${getDashScopeApiKey()}`,
           },
           body: JSON.stringify({
-            systemInstruction: {
-              parts: [{text: systemPrompt}],
-            },
-            contents: [
+            model: getQwenModel(),
+            enable_thinking: false,
+            temperature: 0,
+            max_tokens: maxOutputTokens,
+            messages: [
+              {
+                role: 'system',
+                content: systemPrompt,
+              },
               {
                 role: 'user',
-                parts: [{text: `${prompt}${retryPromptSuffix}`}],
+                content: `${prompt}${retryPromptSuffix}`,
               },
             ],
-            generationConfig: {
-              temperature: 0,
-              maxOutputTokens,
-              responseMimeType: 'application/json',
-              responseJsonSchema: RESPONSE_JSON_SCHEMA,
-              thinkingConfig: {
-                thinkingLevel: 'low',
-              },
-            },
+            response_format: createJsonSchemaResponseFormat(
+              'food_candidates',
+              RESPONSE_JSON_SCHEMA
+            ),
           }),
           cache: 'no-store',
           signal: controller.signal,
@@ -389,12 +382,12 @@ async function requestGeminiJsonArray(
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(
-          `Gemini request failed with ${response.status}: ${errorText.slice(0, 240)}`
+          `Qwen request failed with ${response.status}: ${errorText.slice(0, 240)}`
         );
       }
 
-      const payload = (await response.json()) as GeminiResponse;
-      lastUsageMetadata = payload.usageMetadata ?? lastUsageMetadata;
+      const payload = (await response.json()) as QwenChatCompletionResponse;
+      lastUsageMetadata = payload.usage ?? lastUsageMetadata;
       if (payload.error?.message) {
         throw new Error(payload.error.message);
       }
@@ -415,13 +408,13 @@ async function requestGeminiJsonArray(
           fallbackValidationIssues: [],
         }));
         await recordAiUsageTelemetry({
-          provider: 'gemini',
-          model: getGeminiModel(),
+          provider: 'qwen',
+          model: getQwenModel(),
           requestKind: 'parse_food_candidates',
           inputPreview: prompt.slice(0, 220),
-          promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
-          completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
-          totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+          promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+          completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+          totalTokens: lastUsageMetadata?.total_tokens ?? null,
           durationMs: Date.now() - startedAt,
           attemptCount: attempt,
           success: true,
@@ -432,13 +425,13 @@ async function requestGeminiJsonArray(
       if (attempt === MAX_ATTEMPTS) {
         const result = sanitizeInvalidFallbackProfiles(parsedItems);
         await recordAiUsageTelemetry({
-          provider: 'gemini',
-          model: getGeminiModel(),
+          provider: 'qwen',
+          model: getQwenModel(),
           requestKind: 'parse_food_candidates',
           inputPreview: prompt.slice(0, 220),
-          promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
-          completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
-          totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+          promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+          completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+          totalTokens: lastUsageMetadata?.total_tokens ?? null,
           durationMs: Date.now() - startedAt,
           attemptCount: attempt,
           success: true,
@@ -447,7 +440,7 @@ async function requestGeminiJsonArray(
       }
 
       retryPromptSuffix = `\n\n上一次返回的 fallbackPer100g 不可信，请修正以下问题后重新返回完整 JSON：\n${formatValidationIssues(issues)}`;
-      lastError = new Error(`Gemini fallbackPer100g validation failed: ${formatValidationIssues(issues)}`);
+      lastError = new Error(`Qwen fallbackPer100g validation failed: ${formatValidationIssues(issues)}`);
       await new Promise((resolve) =>
         setTimeout(resolve, RETRY_DELAY_MS * Math.max(1, 2 ** (attempt - 1)))
       );
@@ -467,41 +460,41 @@ async function requestGeminiJsonArray(
 
   if (lastError instanceof Error && lastError.name === 'AbortError') {
     await recordAiUsageTelemetry({
-      provider: 'gemini',
-      model: getGeminiModel(),
+      provider: 'qwen',
+      model: getQwenModel(),
       requestKind: 'parse_food_candidates',
       inputPreview: prompt.slice(0, 220),
-      promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
-      completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
-      totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+      promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+      completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+      totalTokens: lastUsageMetadata?.total_tokens ?? null,
       durationMs: Date.now() - startedAt,
       attemptCount: MAX_ATTEMPTS,
       success: false,
-      errorMessage: 'Gemini request timed out.',
+      errorMessage: 'Qwen request timed out.',
     });
-    throw new Error('Gemini request timed out. Please try again in a moment.');
+    throw new Error('Qwen request timed out. Please try again in a moment.');
   }
 
   await recordAiUsageTelemetry({
-    provider: 'gemini',
-    model: getGeminiModel(),
+    provider: 'qwen',
+    model: getQwenModel(),
     requestKind: 'parse_food_candidates',
     inputPreview: prompt.slice(0, 220),
-    promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
-    completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
-    totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+    promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+    completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+    totalTokens: lastUsageMetadata?.total_tokens ?? null,
     durationMs: Date.now() - startedAt,
     attemptCount: MAX_ATTEMPTS,
     success: false,
-    errorMessage: lastError instanceof Error ? lastError.message : 'Gemini request failed.',
+    errorMessage: lastError instanceof Error ? lastError.message : 'Qwen request failed.',
   });
-  throw lastError instanceof Error ? lastError : new Error('Gemini request failed.');
+  throw lastError instanceof Error ? lastError : new Error('Qwen request failed.');
 }
 
-export async function parseFoodCandidatesWithGemini(
+export async function parseFoodCandidatesWithQwen(
   description: string
 ): Promise<AiParsedFoodItem[]> {
-  return requestGeminiJsonArray(
+  return requestQwenJsonArray(
     `请拆解这句饮食描述，并输出约定的 JSON 数组：\n${description}`,
     SYSTEM_PROMPT,
     2048
@@ -561,7 +554,7 @@ function normalizeCompositeDishBreakdown(
   };
 }
 
-async function requestGeminiJsonObject(
+async function requestQwenJsonObject(
   prompt: string,
   systemPrompt: string,
   responseJsonSchema: object,
@@ -569,13 +562,7 @@ async function requestGeminiJsonObject(
 ): Promise<AiCompositeDishBreakdown> {
   const startedAt = Date.now();
   let lastError: unknown;
-  let lastUsageMetadata:
-    | {
-        promptTokenCount?: number;
-        candidatesTokenCount?: number;
-        totalTokenCount?: number;
-      }
-    | undefined;
+  let lastUsageMetadata: QwenUsageMetadata | undefined;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
@@ -583,32 +570,32 @@ async function requestGeminiJsonObject(
 
     try {
       const response = await fetch(
-        `${getGeminiApiBaseUrl()}/models/${getGeminiModel()}:generateContent`,
+        `${getDashScopeApiBaseUrl()}/chat/completions`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-goog-api-key': getGeminiApiKey(),
+            Authorization: `Bearer ${getDashScopeApiKey()}`,
           },
           body: JSON.stringify({
-            systemInstruction: {
-              parts: [{text: systemPrompt}],
-            },
-            contents: [
+            model: getQwenModel(),
+            enable_thinking: false,
+            temperature: 0,
+            max_tokens: maxOutputTokens,
+            messages: [
+              {
+                role: 'system',
+                content: systemPrompt,
+              },
               {
                 role: 'user',
-                parts: [{text: prompt}],
+                content: prompt,
               },
             ],
-            generationConfig: {
-              temperature: 0,
-              maxOutputTokens,
-              responseMimeType: 'application/json',
-              responseJsonSchema,
-              thinkingConfig: {
-                thinkingLevel: 'low',
-              },
-            },
+            response_format: createJsonSchemaResponseFormat(
+              'composite_dish_breakdown',
+              responseJsonSchema
+            ),
           }),
           cache: 'no-store',
           signal: controller.signal,
@@ -618,12 +605,12 @@ async function requestGeminiJsonObject(
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(
-          `Gemini request failed with ${response.status}: ${errorText.slice(0, 240)}`
+          `Qwen request failed with ${response.status}: ${errorText.slice(0, 240)}`
         );
       }
 
-      const payload = (await response.json()) as GeminiResponse;
-      lastUsageMetadata = payload.usageMetadata ?? lastUsageMetadata;
+      const payload = (await response.json()) as QwenChatCompletionResponse;
+      lastUsageMetadata = payload.usage ?? lastUsageMetadata;
       if (payload.error?.message) {
         throw new Error(payload.error.message);
       }
@@ -634,13 +621,13 @@ async function requestGeminiJsonObject(
       const normalized = normalizeCompositeDishBreakdown(parsed);
 
       await recordAiUsageTelemetry({
-        provider: 'gemini',
-        model: getGeminiModel(),
+        provider: 'qwen',
+        model: getQwenModel(),
         requestKind: 'parse_composite_dish',
         inputPreview: prompt.slice(0, 220),
-        promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
-        completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
-        totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+        promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+        completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+        totalTokens: lastUsageMetadata?.total_tokens ?? null,
         durationMs: Date.now() - startedAt,
         attemptCount: attempt,
         success: true,
@@ -661,25 +648,25 @@ async function requestGeminiJsonObject(
   }
 
   await recordAiUsageTelemetry({
-    provider: 'gemini',
-    model: getGeminiModel(),
+    provider: 'qwen',
+    model: getQwenModel(),
     requestKind: 'parse_composite_dish',
     inputPreview: prompt.slice(0, 220),
-    promptTokens: lastUsageMetadata?.promptTokenCount ?? null,
-    completionTokens: lastUsageMetadata?.candidatesTokenCount ?? null,
-    totalTokens: lastUsageMetadata?.totalTokenCount ?? null,
+    promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+    completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+    totalTokens: lastUsageMetadata?.total_tokens ?? null,
     durationMs: Date.now() - startedAt,
     attemptCount: MAX_ATTEMPTS,
     success: false,
-    errorMessage: lastError instanceof Error ? lastError.message : 'Gemini request failed.',
+    errorMessage: lastError instanceof Error ? lastError.message : 'Qwen request failed.',
   });
-  throw lastError instanceof Error ? lastError : new Error('Gemini request failed.');
+  throw lastError instanceof Error ? lastError : new Error('Qwen request failed.');
 }
 
-export async function parseCompositeDishWithGemini(
+export async function parseCompositeDishWithQwen(
   description: string
 ): Promise<AiCompositeDishBreakdown> {
-  return requestGeminiJsonObject(
+  return requestQwenJsonObject(
     `请把这道复合菜拆成原料 JSON 对象：\n${description}`,
     COMPOSITE_DISH_SYSTEM_PROMPT,
     COMPOSITE_RESPONSE_JSON_SCHEMA,

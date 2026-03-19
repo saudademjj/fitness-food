@@ -7,16 +7,16 @@ runConfig:
   maxInstances: 1
 
 env:
-  - variable: GEMINI_API_KEY
-    secret: GEMINI_API_KEY
+  - variable: DASHSCOPE_API_KEY
+    secret: DASHSCOPE_API_KEY
     availability:
       - RUNTIME
-  - variable: GEMINI_MODEL
-    secret: GEMINI_MODEL
+  - variable: QWEN_MODEL
+    secret: QWEN_MODEL
     availability:
       - RUNTIME
-  - variable: GEMINI_API_BASE_URL
-    secret: GEMINI_API_BASE_URL
+  - variable: DASHSCOPE_BASE_URL
+    secret: DASHSCOPE_BASE_URL
     availability:
       - RUNTIME
   - variable: DATABASE_URL

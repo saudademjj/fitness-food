@@ -44,7 +44,7 @@ export function FoodLogList({
   onEdit,
   listTitle = '今日记录',
   emptyTitle = '今天还没有记录任何食物',
-  emptyDescription = '开始输入饮食描述，系统会优先命中营养数据库，复杂描述再交给 Gemini 处理。',
+  emptyDescription = '开始输入饮食描述，系统会优先命中营养数据库，复杂描述再交给 Qwen 3.5 Plus 处理。',
 }: FoodLogListProps) {
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
 

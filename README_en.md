@@ -11,10 +11,10 @@ English | <a href="./README.md">简体中文</a>
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?style=flat-square&logo=typescript)
 ![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-3.4-06B6D4?style=flat-square&logo=tailwind-css)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?style=flat-square&logo=postgresql)
-![Gemini](https://img.shields.io/badge/Gemini_AI-Enabled-brightgreen?style=flat-square)
+![Qwen](https://img.shields.io/badge/Qwen_3.5-Enabled-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
 
-Fitness-Food is an intelligent diet management system designed for Chinese-speaking users. Record meals through natural language descriptions -- the system prioritizes exact matches from a PostgreSQL nutrition database, invokes Gemini AI only when necessary, and outputs a complete 23-nutrient tracking profile.
+Fitness-Food is an intelligent diet management system designed for Chinese-speaking users. Record meals through natural language descriptions -- the system prioritizes exact matches from a PostgreSQL nutrition database, invokes Qwen 3.5 AI only when necessary, and outputs a complete 23-nutrient tracking profile.
 
 </div>
 
@@ -50,7 +50,7 @@ Fitness-Food is an intelligent diet management system designed for Chinese-speak
 ### Database-First Strategy
 
 - Simple food descriptions hit PostgreSQL directly with zero model invocation overhead
-- Gemini AI serves only as a fallback for complex descriptions and unmatched items
+- Qwen 3.5 AI serves only as a fallback for complex descriptions and unmatched items
 - Safe `pg_trgm` trigram matching replaces dangerous `ILIKE '%term%'` substring queries
 - Brand foods (e.g. Coca-Cola, McNuggets) use curated brand nutrition overrides
 
@@ -135,7 +135,7 @@ The system uses a four-tier priority strategy, attempting each level until a mat
 | 1 | `recipe_alias` | Exact match against standard recipe names |
 | 2 | `canonical_food_alias` | Exact match against canonical food aliases |
 | 3 | `app_catalog_profile_23` | Food catalog direct match + `pg_trgm` fuzzy matching |
-| 4 | Gemini AI Fallback | Natural language parsing with conservative validation and value clamping |
+| 4 | Qwen 3.5 AI Fallback | Natural language parsing with conservative validation and value clamping |
 
 Key mechanisms:
 
@@ -187,7 +187,7 @@ Each food entry stores both `per100g_profile` (per-100g nutrition) and `totals_p
 
 | Technology | Purpose |
 |---|---|
-| Google Gemini API | Natural language food description parsing |
+| DashScope / Qwen API | Natural language food description parsing |
 | Multi-level Prompt Templates | Simple foods / composite dishes / portion estimation |
 | Conservative Validation | Nutrient value clamping, outlier rejection, thermodynamic consistency checks |
 | Parse Telemetry | Records input/output, tokens, and latency for every AI invocation |
@@ -209,7 +209,7 @@ fitness-food/
 ├── src/
 │   ├── ai/
 │   │   └── flows/
-│   │       └── parse-food-description-flow.ts   # AI orchestration: direct parse -> segmentation -> Gemini fallback
+│   │       └── parse-food-description-flow.ts   # AI orchestration: direct parse -> segmentation -> Qwen fallback
 │   ├── app/
 │   │   ├── page.tsx                             # Main page and state coordinator
 │   │   ├── layout.tsx                           # Root layout
@@ -242,7 +242,7 @@ fitness-food/
 │       ├── food-log-db.ts                       # Food log database queries
 │       ├── auth.ts                              # Magic Link auth and session management
 │       ├── runtime-observability.ts             # Parse telemetry and error tracking
-│       ├── ai-usage-telemetry.ts                # Gemini API usage tracking
+│       ├── ai-usage-telemetry.ts                # Qwen API usage tracking
 │       ├── miss-telemetry.ts                    # Lookup miss feedback loop
 │       └── ...                                  # DB connection, rate limiting, utilities
 ├── db/
@@ -290,8 +290,9 @@ Create a `.env.local` file in the project root:
 # Database (required)
 DATABASE_URL=postgresql://localhost:5432/foodetl_local
 
-# Gemini AI (required for AI fallback)
-GEMINI_API_KEY=your_gemini_api_key
+# DashScope / Qwen (required for AI fallback)
+DASHSCOPE_API_KEY=your_dashscope_api_key
+QWEN_MODEL=qwen3.5-plus
 
 # Magic Link Auth (optional -- anonymous mode if not configured)
 APP_BASE_URL=http://localhost:9002
@@ -358,7 +359,7 @@ The system records telemetry across multiple dimensions:
 | Telemetry Table | Purpose |
 |---|---|
 | `food_parse_telemetry` | Input/output and latency for every parse operation |
-| `ai_usage_telemetry` | Gemini API token consumption and cost tracking |
+| `ai_usage_telemetry` | Qwen API token consumption and cost tracking |
 | `lookup_miss_telemetry` | Unmatched food names driving alias and ETL improvements |
 | `runtime_error_telemetry` | Runtime error tracking for production health |
 | `materialized_view_refresh_state` | View refresh orchestration and staleness detection |

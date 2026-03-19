@@ -1,18 +1,18 @@
 # 部署说明
 
-## 1. 准备 Gemini API
+## 1. 准备 DashScope / Qwen API
 
-建议在 Google AI Studio 创建 API key，并把它放进应用环境变量里：
+建议在阿里云百炼创建 API key，并把它放进应用环境变量里：
 
 ```env
-GEMINI_API_KEY=<your_google_ai_studio_key>
-GEMINI_MODEL=gemini-3-flash-preview
+DASHSCOPE_API_KEY=<your_dashscope_key>
+QWEN_MODEL=qwen3.5-plus
 ```
 
 如果你需要显式覆盖 API 地址，也可以额外设置：
 
 ```env
-GEMINI_API_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ```
 
 ## 2. 本地开发连接 PostgreSQL
@@ -87,7 +87,7 @@ PGPASSWORD=<your-password>
 ## 4. 成本控制建议
 
 - 简单单品描述先直接查库，避免每次都走模型
-- Gemini 只在提交自然语言饮食描述时调用一次
+- Qwen 只在提交自然语言饮食描述时调用一次
 - 前端调滑块不再请求模型
 - 数据库优先，模型只负责识别和兜底
 - 保持请求长度限制和 IP 限流，避免白白消耗额度

@@ -5,7 +5,7 @@ This file is for AI coding agents working in this repository. Read this first, t
 ## 30-Second Summary
 
 - Chinese food logging app built with `Next.js 15`, `React 19`, `TypeScript`, `Tailwind`, and `PostgreSQL`
-- Core rule: database nutrition lookup first, Gemini fallback second
+- Core rule: database nutrition lookup first, Qwen fallback second
 - The product uses a full 23-field nutrition profile, not just calories/macros
 - Anonymous users work locally first; authenticated users sync to PostgreSQL and can migrate local drafts after login
 - Runtime depends on refreshed materialized views; empty publish layers should fail loudly
@@ -29,7 +29,7 @@ This file is for AI coding agents working in this repository. Read this first, t
 
 ## Stack And Commands
 
-- Stack: `Next.js App Router`, `React 19`, `TypeScript`, `Tailwind`, `Radix UI`, `Recharts`, `pg`, `Gemini`
+- Stack: `Next.js App Router`, `React 19`, `TypeScript`, `Tailwind`, `Radix UI`, `Recharts`, `pg`, `Qwen`
 - Dev server: `npm run dev` on port `9002`
 - Build: `npm run build`
 - Start: `npm run start`
@@ -43,7 +43,7 @@ This file is for AI coding agents working in this repository. Read this first, t
 - DB is required for meaningful runtime behavior
 - Primary local DB config: `DATABASE_URL=postgresql://localhost:5432/foodetl_local`
 - `PG*` variables can be used instead of `DATABASE_URL`
-- Gemini fallback requires `GEMINI_API_KEY`
+- Qwen fallback requires `DASHSCOPE_API_KEY`
 - Magic-link auth requires `APP_BASE_URL`, `SMTP_HOST`, `SMTP_PORT`, and `SMTP_FROM`
 - Treat `.env.local` as sensitive; do not paste secrets into prompts
 
@@ -88,7 +88,7 @@ If the task is about food parsing or nutrition results:
   - `src/lib/portion-reference.ts`
   - `src/lib/nutrition-db.ts`
   - `src/lib/nutrition-profile.ts`
-  - `src/lib/gemini.ts`
+  - `src/lib/qwen.ts`
   - `src/lib/validation.ts`
 
 If the task is about logs, history, export, or migration:
@@ -126,11 +126,11 @@ If the task is about deployment or production issues:
 - Auth actions: `src/app/actions/auth.ts`
 - DB pool: `src/lib/db.ts`
 - Nutrition lookup: `src/lib/nutrition-db.ts`
-- Gemini client/prompting: `src/lib/gemini.ts`
+- Qwen client/prompting: `src/lib/qwen.ts`
 
 ## Non-Negotiable Product Rules
 
-- Keep the "database first, AI fallback second" strategy; do not make Gemini the default path for simple inputs
+- Keep the "database first, AI fallback second" strategy; do not make Qwen the default path for simple inputs
 - Preserve the full 23-nutrient profile shape across parsing, storage, and rendering
 - Frontend weight edits should recompute locally when possible; avoid extra model calls
 - Anonymous and authenticated flows are intentionally different; preserve draft migration after login
@@ -179,7 +179,7 @@ If startup fails because nutrition materialized views are empty, refresh likely 
 
 - Next.js food logging app, Chinese UX, PostgreSQL-backed
 - 23-field nutrition profile is a core invariant
-- Database lookup is primary; Gemini is fallback only
+- Database lookup is primary; Qwen is fallback only
 - `src/app/page.tsx` is the UI/state hotspot
 - `src/lib/nutrition-db.ts` and `src/ai/flows/parse-food-description-flow.ts` are the backend hotspots
 - Materialized view refresh is required for valid runtime data

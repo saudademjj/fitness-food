@@ -5,7 +5,7 @@ import {
   type ResolvedFoodItem,
   type ResolvedFoodItems,
 } from '@/lib/food-contract';
-import {parseCompositeDishWithGemini} from '@/lib/gemini';
+import {parseCompositeDishWithQwen} from '@/lib/qwen';
 import {mapRowToLookupResult, type CatalogRow, type NutritionLookupResolver, type NutritionLookupResult} from '@/lib/nutrition-db';
 import {
   aggregateNutritionProfiles,
@@ -413,7 +413,7 @@ export async function resolveCompositeDishWithAiIngredients(
   candidate: CompositeDishCandidate,
   lookupResolver: NutritionLookupResolver
 ): Promise<ParseFoodDescriptionSegment> {
-  const breakdown = await parseCompositeDishWithGemini(candidate.foodName);
+  const breakdown = await parseCompositeDishWithQwen(candidate.foodName);
   const targetWeightEstimate = await estimateGrams(candidate.foodName, candidate.quantityDescription);
   const targetWeight =
     targetWeightEstimate.grams > 0

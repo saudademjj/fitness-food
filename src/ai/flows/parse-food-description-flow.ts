@@ -19,7 +19,7 @@ import {
   sanitizeFoodName,
   splitFoodDescriptionSegments,
 } from '@/lib/food-text';
-import {parseFoodCandidatesWithGemini} from '@/lib/gemini';
+import {parseFoodCandidatesWithQwen} from '@/lib/qwen';
 import {
   aggregateNutritionProfiles,
   createNutritionProfile,
@@ -330,7 +330,7 @@ async function resolveAiCandidates(
   description: string,
   lookupResolver: NutritionLookupResolver
 ): Promise<{items: ResolvedFoodItems; traces: WeightResolutionTrace[]}> {
-  const candidates = await parseFoodCandidatesWithGemini(description);
+  const candidates = await parseFoodCandidatesWithQwen(description);
   const resolved = await Promise.all(
     candidates.map(async (candidate) => {
       const normalizedCandidate = sanitizeCandidate(candidate);

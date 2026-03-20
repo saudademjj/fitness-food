@@ -40,16 +40,27 @@ export async function reviewEditedFoodsAction(
   foods: ResolvedFoodItems,
   sourceDescription?: string | null
 ): Promise<ParseFoodDescriptionOutput> {
-  const resolvedFoods = await resolveEditedFoods(foods);
-  const baseOutput = buildParseOutputFromFoods(resolvedFoods, sourceDescription);
-  const reviewed = await applySecondaryReviewToOutput({
-    sourceDescription:
-      sourceDescription?.trim() || resolvedFoods[0]?.foodName || '已编辑食物',
-    output: baseOutput,
-    lockExplicitMetricWeights: false,
-  });
+  let resolvedFoods: ResolvedFoodItems;
+  try {
+    resolvedFoods = await resolveEditedFoods(foods);
+  } catch {
+    resolvedFoods = foods;
+  }
 
-  return reviewed.output;
+  const baseOutput = buildParseOutputFromFoods(resolvedFoods, sourceDescription);
+
+  try {
+    const reviewed = await applySecondaryReviewToOutput({
+      sourceDescription:
+        sourceDescription?.trim() || resolvedFoods[0]?.foodName || '已编辑食物',
+      output: baseOutput,
+      lockExplicitMetricWeights: false,
+    });
+
+    return reviewed.output;
+  } catch {
+    return baseOutput;
+  }
 }
 
 export async function updateFoodLogItemAction(

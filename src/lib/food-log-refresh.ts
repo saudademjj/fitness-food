@@ -1,6 +1,7 @@
 import {parseFoodDescription} from '@/ai/flows/parse-food-description-flow';
 import type {FoodLogEntry} from '@/components/macro-calculator/types';
 import type {ResolvedFoodItem, ResolvedFoodItems} from '@/lib/food-contract';
+import {recordRuntimeError} from '@/lib/runtime-observability';
 import {isCompositeFoodName, sanitizeFoodName} from '@/lib/food-text';
 import {
   createNutritionLookupResolver,
@@ -130,7 +131,18 @@ async function resolveEditedFood(
     return buildResolvedEditedFood(normalizedFood, dbMatch);
   }
 
-  const reparsedFood = await parseCandidateFromDescriptions([sanitizedName], sanitizedName);
+  let reparsedFood: ResolvedFoodItem | null = null;
+  try {
+    reparsedFood = await parseCandidateFromDescriptions([sanitizedName], sanitizedName);
+  } catch (error) {
+    await recordRuntimeError({
+      scope: 'food_log_refresh',
+      code: 'reparse_failed',
+      message: error instanceof Error ? error.message : 'AI re-parse failed',
+      context: {foodName: sanitizedName},
+    });
+  }
+
   if (!reparsedFood) {
     return {
       ...normalizedFood,

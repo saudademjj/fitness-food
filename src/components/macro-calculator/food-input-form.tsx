@@ -5,9 +5,11 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Plus, Sparkles, Loader2 } from 'lucide-react';
-import { parseDescriptionAction } from '@/app/actions/food';
 import { useToast } from '@/hooks/use-toast';
-import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
+import {
+  ParseFoodDescriptionOutputSchema,
+  type ParseFoodDescriptionOutput,
+} from '@/lib/food-contract';
 
 interface FoodInputFormProps {
   onFoodsParsed: (payload: {
@@ -21,12 +23,44 @@ export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
   const [isParsing, setIsParsing] = useState(false);
   const { toast } = useToast();
 
+  const requestParse = async (input: string): Promise<ParseFoodDescriptionOutput> => {
+    const response = await fetch('/api/parse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      credentials: 'same-origin',
+      cache: 'no-store',
+      body: JSON.stringify({ description: input }),
+    });
+
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.includes('application/json')) {
+      throw new Error('页面刚刚更新，请刷新页面后再试一次。');
+    }
+
+    const payload = (await response.json()) as
+      | ParseFoodDescriptionOutput
+      | {error?: string};
+
+    if (!response.ok) {
+      throw new Error(
+        typeof payload === 'object' && payload && 'error' in payload && payload.error
+          ? payload.error
+          : '解析服务暂时不可用，请稍后再试。'
+      );
+    }
+
+    return ParseFoodDescriptionOutputSchema.parse(payload);
+  };
+
   const handleParse = async () => {
     if (!description.trim()) return;
 
     setIsParsing(true);
     try {
-      const results = await parseDescriptionAction(description);
+      const results = await requestParse(description);
       if (results && results.items.length > 0) {
         onFoodsParsed({
           result: results,
@@ -41,10 +75,21 @@ export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
         });
       }
     } catch (error) {
-      const description =
-        error instanceof Error
-          ? error.message
-          : "连接AI服务时出现错误，请稍后再试。";
+      const description = (() => {
+        if (!(error instanceof Error)) {
+          return "连接AI服务时出现错误，请稍后再试。";
+        }
+
+        const message = error.message.trim();
+        if (
+          message.includes('unexpected response') ||
+          message.includes('Failed to find Server Action')
+        ) {
+          return '页面刚刚更新，请刷新页面后再试一次。';
+        }
+
+        return message || "连接AI服务时出现错误，请稍后再试。";
+      })();
 
       toast({
         title: "解析失败",

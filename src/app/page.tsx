@@ -681,7 +681,9 @@ export default function MacroHelperPage() {
               ? '你已经修改了名称或克重。系统会先调用主模型、MiniMax 和 DeepSeek 共同复核，再把最终结果回显给你。'
               : editingEntry
                 ? '这是当前可保存的复核结果；如继续修改名称或克重，会再次进入三模型复核。'
-                : '首轮结果已完成多模型复核。直接确认即可保存，继续修改则会再次复核。'
+                : parsedResult.secondaryReviewSummary?.attempted
+                  ? '这是当前可保存的复核结果。直接确认即可保存，继续修改名称或克重会再次进入三模型复核。'
+                  : '这是首轮识别结果。直接确认即可保存；如继续修改名称或克重，系统会先调用三模型复核再回显。'
           }
           confirmLabel={
             confirmationStage === 'editing'

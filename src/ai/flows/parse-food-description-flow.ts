@@ -34,7 +34,6 @@ import {
 } from '@/lib/nutrition-db';
 import {buildResolvedFood} from '@/lib/resolved-food';
 import {recordFoodParseTelemetry, recordRuntimeError, type WeightResolutionTrace} from '@/lib/runtime-observability';
-import {applySecondaryReviewToOutput} from '@/lib/secondary-review';
 import {dedupeValidationFlags} from '@/lib/validation';
 
 type WeightedResolution = {
@@ -571,19 +570,11 @@ export async function parseFoodDescription(
     segments: resolvedSegments,
   });
 
-  const reviewed = await applySecondaryReviewToOutput({
-    sourceDescription: parsedInput.description,
-    output: initialOutput,
-    lockExplicitMetricWeights: true,
-  });
-  const output = ParseFoodDescriptionOutputSchema.parse(reviewed.output);
-
   await recordFoodParseTelemetry({
     description: parsedInput.description,
-    output,
+    output: initialOutput,
     weightResolutionTraces: segmentResults.flatMap((result) => result.traces),
-    secondaryReview: reviewed.summary,
   });
 
-  return output;
+  return initialOutput;
 }

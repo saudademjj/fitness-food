@@ -19,7 +19,7 @@ import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
 import {updateFoodWeight} from './types';
 import {AlertTriangle, Droplets, Flame, Loader2, Scale, Trash2, Wheat, Zap} from 'lucide-react';
 import {NutritionDetailGrid} from '@/components/macro-calculator/nutrition-detail-grid';
-import {getReliabilityMeta} from '@/lib/source-meta';
+import {getReliabilityMeta, getReviewerLabel} from '@/lib/source-meta';
 import {normalizeLookupText, sanitizeFoodName} from '@/lib/food-text';
 
 type EditableFoodItem = ParseFoodDescriptionOutput['items'][number] & {
@@ -38,6 +38,7 @@ interface ConfirmationDialogProps {
   dialogDescription?: string;
   confirmLabel?: string;
   isSubmitting?: boolean;
+  onReviewStateChange?: (state: 'editing' | 'reviewed') => void;
 }
 
 function formatNutritionCardValue(value: number | null, status: 'measured' | 'estimated' | 'partial' | 'missing', unit: string) {
@@ -46,6 +47,112 @@ function formatNutritionCardValue(value: number | null, status: 'measured' | 'es
   }
 
   return `${status === 'partial' ? '>= ' : ''}${value.toFixed(1)} ${unit}`;
+}
+
+function SecondaryReviewSummaryCard({
+  summary,
+}: {
+  summary: ParseFoodDescriptionOutput['secondaryReviewSummary'];
+}) {
+  if (!summary || (!summary.attempted && !summary.providerCount)) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-2xl border border-primary/20 bg-primary/[0.04] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-primary">三模型交叉复核</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {summary.succeeded
+              ? `${summary.voteCount}/${summary.providerCount} 票支持 · 共识分 ${Math.round(summary.consensusScore * 100)}`
+              : '本轮未形成可用共识'}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline" className="rounded-full">
+            返回 {summary.successfulReviewerCount}/{summary.providerCount}
+          </Badge>
+          <Badge variant="outline" className="rounded-full">
+            调整 {summary.changedItemCount} 项
+          </Badge>
+          <Badge variant="outline" className="rounded-full">
+            改重量 {summary.adjustedWeightCount}
+          </Badge>
+          <Badge variant="outline" className="rounded-full">
+            改营养 {summary.adjustedNutritionCount}
+          </Badge>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {summary.providers.map((provider) => {
+          const succeeded = summary.successfulProviders.includes(provider);
+          return (
+            <Badge
+              key={provider}
+              variant="outline"
+              className={`rounded-full ${
+                succeeded
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : 'border-amber-200 bg-amber-50 text-amber-700'
+              }`}
+            >
+              {getReviewerLabel(provider)} {succeeded ? '已返回' : '未返回'}
+            </Badge>
+          );
+        })}
+      </div>
+      {summary.failureReason ? (
+        <p className="mt-3 text-xs text-muted-foreground">
+          备注：{summary.failureReason}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function ReviewMetaPanel({
+  reviewMeta,
+}: {
+  reviewMeta: NonNullable<EditableFoodItem['reviewMeta']>;
+}) {
+  return (
+    <div className="rounded-xl border border-border/70 bg-card/70 p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className="rounded-full border-primary/20 bg-primary/5 text-primary">
+          {reviewMeta.summaryLabel}
+        </Badge>
+        <span className="text-muted-foreground">
+          {reviewMeta.successfulReviewerCount}/{reviewMeta.reviewerCount} 个模型返回
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {reviewMeta.votes.map((vote) => (
+          <Badge
+            key={vote.provider}
+            variant="outline"
+            className={`rounded-full ${
+              vote.supportsConsensus
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                : 'border-amber-200 bg-amber-50 text-amber-700'
+            }`}
+          >
+            {vote.providerLabel} · {vote.supportsConsensus ? '支持' : '保留'} ·{' '}
+            {Math.round(vote.agreementScore * 100)}
+          </Badge>
+        ))}
+        {reviewMeta.failedProviders.map((provider) => (
+          <Badge
+            key={provider}
+            variant="outline"
+            className="rounded-full border-amber-200 bg-amber-50 text-amber-700"
+          >
+            {getReviewerLabel(provider)} · 未返回
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 export function ConfirmationDialog({
@@ -57,6 +164,7 @@ export function ConfirmationDialog({
   dialogDescription = '先确认识别结果，再调节名称和克重。23 项营养会根据每 100g 数据实时重算。',
   confirmLabel = '确认并添加',
   isSubmitting = false,
+  onReviewStateChange,
 }: ConfirmationDialogProps) {
   const [editedFoods, setEditedFoods] = useState<EditableFoodItem[]>([]);
   const [requiresReconciliation, setRequiresReconciliation] = useState(false);
@@ -67,16 +175,19 @@ export function ConfirmationDialog({
   }, [parsedResult]);
 
   useEffect(() => {
-    setRequiresReconciliation(
+    const nextRequiresReconciliation =
       editedFoods.some((food) => {
         const originalFood = parsedResult.items[food.__originalIndex];
         return (
           normalizeLookupText(sanitizeFoodName(food.foodName)) !==
-          normalizeLookupText(sanitizeFoodName(originalFood?.foodName ?? ''))
+          normalizeLookupText(sanitizeFoodName(originalFood?.foodName ?? '')) ||
+          Math.abs(food.estimatedGrams - (originalFood?.estimatedGrams ?? 0)) >= 1
         );
-      })
-    );
-  }, [editedFoods, parsedResult]);
+      });
+
+    setRequiresReconciliation(nextRequiresReconciliation);
+    onReviewStateChange?.(nextRequiresReconciliation ? 'editing' : 'reviewed');
+  }, [editedFoods, onReviewStateChange, parsedResult]);
 
   const handleWeightUpdate = (index: number, grams: number) => {
     const updated = [...editedFoods];
@@ -111,6 +222,7 @@ export function ConfirmationDialog({
 
         <ScrollArea className="h-[520px] px-6 py-4">
           <div className="space-y-6">
+            <SecondaryReviewSummaryCard summary={parsedResult.secondaryReviewSummary} />
             {parsedResult.segments.map((segment, index) => (
               <div
                 key={`${segment.sourceDescription}-${index}`}
@@ -208,6 +320,7 @@ export function ConfirmationDialog({
                         <p className="mt-1">{reliability.description}</p>
                       </div>
                     ) : null}
+                    {food.reviewMeta ? <ReviewMetaPanel reviewMeta={food.reviewMeta} /> : null}
                   </div>
 
                   <div className="min-w-[180px] space-y-2">

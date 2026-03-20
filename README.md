@@ -294,14 +294,26 @@ npm install
 # 数据库连接（必需）
 DATABASE_URL=postgresql://localhost:5432/foodetl_local
 
-# DashScope / Qwen（AI 兜底解析需要）
-DASHSCOPE_API_KEY=your_dashscope_api_key
-QWEN_MODEL=qwen3.5-plus
-QWEN_ENABLE_THINKING=true
-QWEN_ENABLE_SEARCH=true
-QWEN_FORCE_SEARCH=false
-QWEN_SEARCH_STRATEGY=turbo
-QWEN_REQUEST_TIMEOUT_MS=45000
+# 主模型（默认推荐 OpenRouter）
+OPENROUTER_API_KEY=your_openrouter_api_key
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=xiaomi/mimo-v2-pro
+PRIMARY_MODEL_ENABLE_THINKING=true
+PRIMARY_MODEL_ENABLE_SEARCH=true
+
+# 如果你改用 DashScope 兼容接口，改为配置这组：
+# DASHSCOPE_API_KEY=your_dashscope_api_key
+# DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+# PRIMARY_MODEL_ID=qwen3.5-plus
+
+# 可选：三模型复核里的 MiniMax 走 OpenRouter 的 MiniMax M2.7，并固定优先使用 MiniMax 提供商
+# SECONDARY_REVIEW_ENABLE_OPENROUTER_MINIMAX=true
+# OPENROUTER_MINIMAX_REVIEW_MODEL=minimax/minimax-m2.7
+# OPENROUTER_MINIMAX_REVIEW_PROVIDER_ORDER=minimax
+# OPENROUTER_MINIMAX_REVIEW_ALLOW_FALLBACKS=false
+# OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS=30000
+# SECONDARY_REVIEW_ENABLE_DEEPSEEK=false
+# DEEPSEEK_REQUEST_TIMEOUT_MS=45000
 
 # Magic Link 认证（可选，不配置则仅支持匿名模式）
 APP_BASE_URL=http://localhost:9002
@@ -339,19 +351,31 @@ npm run dev
 | 变量 | 必需 | 说明 |
 |---|:---:|---|
 | `DATABASE_URL` | 是 | PostgreSQL 连接字符串 |
-| `DASHSCOPE_API_KEY` | 是 | 阿里云百炼 DashScope API 密钥，用于 AI 兜底解析 |
-| `QWEN_MODEL` | 否 | Qwen 模型名，默认 `qwen3.5-plus` |
-| `QWEN_ENABLE_THINKING` | 否 | 是否开启推理思考，默认 `true` |
-| `QWEN_ENABLE_SEARCH` | 否 | 是否开启联网搜索能力，默认 `true` |
-| `QWEN_FORCE_SEARCH` | 否 | 是否强制每次请求都联网，默认 `false` |
-| `QWEN_SEARCH_STRATEGY` | 否 | 联网搜索策略，默认 `turbo`；更深度的检索可改为 `max` |
-| `QWEN_REQUEST_TIMEOUT_MS` | 否 | Qwen 请求超时毫秒数；开启思考/联网时建议至少 `45000` |
+| `OPENROUTER_API_KEY` | 否 | OpenRouter API 密钥；默认主模型入口 |
+| `OPENROUTER_MODEL` | 否 | OpenRouter 主模型名，默认 `xiaomi/mimo-v2-pro` |
+| `DASHSCOPE_API_KEY` | 否 | DashScope API 密钥；切回兼容接口时使用 |
+| `PRIMARY_MODEL_ID` | 否 | DashScope 兼容接口下的主模型名，例如 `qwen3.5-plus` |
+| `PRIMARY_MODEL_ENABLE_THINKING` | 否 | 是否开启主模型推理思考，默认 `true` |
+| `PRIMARY_MODEL_ENABLE_SEARCH` | 否 | 是否开启主模型联网搜索，默认 `true` |
+| `PRIMARY_MODEL_FORCE_SEARCH` | 否 | 是否强制每次请求都联网，默认 `false` |
+| `PRIMARY_MODEL_SEARCH_STRATEGY` | 否 | 联网搜索策略，默认 `turbo`；更深度的检索可改为 `max` |
+| `PRIMARY_MODEL_REQUEST_TIMEOUT_MS` | 否 | 主模型请求超时毫秒数；开启思考/联网时建议至少 `45000` |
+| `PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS` | 否 | 主模型 reviewer 自己的超时毫秒数；默认 `15000` |
+| `SECONDARY_REVIEW_ENABLE_OPENROUTER_MINIMAX` | 否 | 是否启用 OpenRouter MiniMax reviewer；默认使用 `minimax/minimax-m2.7` |
+| `OPENROUTER_MINIMAX_REVIEW_MODEL` | 否 | MiniMax reviewer 的 OpenRouter 模型 ID，默认 `minimax/minimax-m2.7` |
+| `OPENROUTER_MINIMAX_REVIEW_PROVIDER_ORDER` | 否 | reviewer 的 OpenRouter provider 顺序，默认 `minimax` |
+| `OPENROUTER_MINIMAX_REVIEW_ALLOW_FALLBACKS` | 否 | provider 不可用时是否允许回退到其他提供商，默认 `false` |
+| `OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS` | 否 | MiniMax reviewer 自己的超时毫秒数；建议按现网经验至少 `30000` |
+| `SECONDARY_REVIEW_ENABLE_DEEPSEEK` | 否 | 是否启用 DeepSeek reviewer，默认关闭 |
+| `DEEPSEEK_REQUEST_TIMEOUT_MS` | 否 | DeepSeek reviewer 自己的超时毫秒数；默认 `45000` |
 | `APP_BASE_URL` | 否 | 应用基础 URL，Magic Link 认证需要 |
 | `SMTP_HOST` | 否 | SMTP 服务器地址 |
 | `SMTP_PORT` | 否 | SMTP 端口 |
 | `SMTP_FROM` | 否 | 发件人邮箱地址 |
 
 > 也可使用 `PGHOST`、`PGPORT`、`PGDATABASE` 等 `PG*` 环境变量替代 `DATABASE_URL`。
+>
+> 二次复核链路不再依赖外层统一的 `SECONDARY_REVIEW_TIMEOUT_MS`。当前实际生效的是各 provider 自己的超时：`PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS`、`OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS`、`DEEPSEEK_REQUEST_TIMEOUT_MS`。
 
 ---
 

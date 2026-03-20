@@ -1,4 +1,4 @@
-import type {ResolvedFoodItem, ResolvedFoodItems} from '@/lib/food-contract';
+import type {FoodReviewMeta, ResolvedFoodItem, ResolvedFoodItems} from '@/lib/food-contract';
 import {
   CORE_MACRO_KEYS,
   NUTRITION_PROFILE_KEYS,
@@ -140,6 +140,27 @@ function isNutritionProfileMeta(value: unknown): value is NutritionProfileMeta23
   });
 }
 
+export function isReviewMeta(value: unknown): value is FoodReviewMeta {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const candidate = value as FoodReviewMeta;
+  return (
+    typeof candidate.attempted === 'boolean' &&
+    isFiniteNumber(candidate.reviewerCount) &&
+    isFiniteNumber(candidate.successfulReviewerCount) &&
+    isFiniteNumber(candidate.voteCount) &&
+    isFiniteNumber(candidate.consensusScore) &&
+    typeof candidate.verdict === 'string' &&
+    typeof candidate.summaryLabel === 'string' &&
+    Array.isArray(candidate.providers) &&
+    Array.isArray(candidate.successfulProviders) &&
+    Array.isArray(candidate.failedProviders) &&
+    Array.isArray(candidate.votes)
+  );
+}
+
 function isLegacyMacroShape(
   value: unknown
 ): value is Pick<MacroGoals, 'energyKcal' | 'proteinGrams' | 'carbohydrateGrams' | 'fatGrams'> {
@@ -218,6 +239,7 @@ export function isFoodLogEntryArray(value: unknown): value is FoodLogEntry[] {
     const candidate = entry as FoodLogEntry & {
       per100gMeta?: NutritionProfileMeta23;
       totalsMeta?: NutritionProfileMeta23;
+      reviewMeta?: FoodReviewMeta | null;
     };
 
     return (
@@ -234,6 +256,9 @@ export function isFoodLogEntryArray(value: unknown): value is FoodLogEntry[] {
       Array.isArray(candidate.validationFlags) &&
       Boolean(coerceNutritionProfile(candidate.per100g)) &&
       Boolean(coerceNutritionProfile(candidate.totals)) &&
+      (candidate.reviewMeta === undefined ||
+        candidate.reviewMeta === null ||
+        isReviewMeta(candidate.reviewMeta)) &&
       (candidate.loggedOn === undefined ||
         (typeof candidate.loggedOn === 'string' && isDateKey(candidate.loggedOn))) &&
       isFiniteNumber(candidate.timestamp)
@@ -272,6 +297,10 @@ export function coerceFoodLogEntryArray(value: unknown): FoodLogEntry[] | null {
         totals,
         entry.sourceKind
       ),
+      reviewMeta:
+        isReviewMeta((entry as FoodLogEntry & {reviewMeta?: FoodReviewMeta | null}).reviewMeta)
+          ? (entry as FoodLogEntry & {reviewMeta?: FoodReviewMeta | null}).reviewMeta
+          : null,
     };
   });
 }

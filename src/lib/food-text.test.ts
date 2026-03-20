@@ -30,6 +30,30 @@ test('extractMultiFoodCandidates also splits foods without explicit quantity phr
   ]);
 });
 
+test('extractMultiFoodCandidates splits combo meals joined by 配', () => {
+  const candidates = extractMultiFoodCandidates('辣椒炒肉配米饭');
+  assert.deepEqual(candidates, [
+    {foodName: '辣椒炒肉', quantityDescription: '未知'},
+    {foodName: '米饭', quantityDescription: '未知'},
+  ]);
+});
+
+test('extractMultiFoodCandidates keeps left-side shared quantity on combo meals', () => {
+  const candidates = extractMultiFoodCandidates('一份辣椒炒肉配米饭');
+  assert.deepEqual(candidates, [
+    {foodName: '辣椒炒肉', quantityDescription: '一份'},
+    {foodName: '米饭', quantityDescription: '未知'},
+  ]);
+});
+
+test('extractMultiFoodCandidates keeps leading quantity when staple appears on the left', () => {
+  const candidates = extractMultiFoodCandidates('一份米饭配辣椒炒肉');
+  assert.deepEqual(candidates, [
+    {foodName: '米饭', quantityDescription: '一份'},
+    {foodName: '辣椒炒肉', quantityDescription: '未知'},
+  ]);
+});
+
 test('splitFoodDescriptionSegments preserves explicit metric weights per segment', () => {
   const segments = splitFoodDescriptionSegments('400g火腿蛋炒饭配300ml可乐');
   assert.deepEqual(segments, ['400g火腿蛋炒饭', '300ml可乐']);
@@ -55,6 +79,13 @@ test('splitFoodDescriptionSegments keeps intrinsic 和 inside composite dish nam
   ]);
 });
 
+test('splitFoodDescriptionSegments splits combo meals joined by 和 when one side is a staple', () => {
+  assert.deepEqual(splitFoodDescriptionSegments('辣椒炒肉和米饭'), [
+    '辣椒炒肉',
+    '米饭',
+  ]);
+});
+
 test('sanitizeFoodName keeps intrinsic leading 和 for food names such as 和牛', () => {
   assert.equal(sanitizeFoodName('和牛汉堡'), '和牛汉堡');
 });
@@ -63,4 +94,6 @@ test('isCompositeFoodName avoids obvious non-food verb compounds', () => {
   assert.equal(isCompositeFoodName('炒勺'), false);
   assert.equal(isCompositeFoodName('炒作'), false);
   assert.equal(isCompositeFoodName('辣椒炒肉'), true);
+  assert.equal(isCompositeFoodName('香菇猪肉水饺'), true);
+  assert.equal(isCompositeFoodName('麦当劳中份薯条'), true);
 });

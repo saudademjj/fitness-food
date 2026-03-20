@@ -1,11 +1,18 @@
 import {recordAiUsageTelemetry} from '@/lib/ai-usage-telemetry';
-import {buildNutritionProfileMeta} from '@/lib/nutrition-profile';
+import {buildNutritionProfileMeta, createNutritionProfile} from '@/lib/nutrition-profile';
 import {
   AiCompositeDishBreakdownSchema,
   AiParsedFoodItemsSchema,
+  AiReviewedFoodItemsSchema,
   type AiCompositeDishBreakdown,
   type AiParsedFoodItem,
+  type AiReviewedFoodItem,
+  type NutritionProfile23,
 } from '@/lib/food-contract';
+import {
+  buildSecondaryReviewPrompt,
+  SECONDARY_REVIEW_SYSTEM_PROMPT,
+} from '@/lib/secondary-review-prompt';
 import {
   sanitizeFallbackNutritionProfile,
   validateMacroNutrients,
@@ -13,6 +20,8 @@ import {
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
 const ENHANCED_REQUEST_TIMEOUT_MS = 45_000;
+const REVIEW_REQUEST_TIMEOUT_MS = 15_000;
+const REVIEW_MAX_OUTPUT_TOKENS = 1_024;
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 1_200;
 const NETWORK_SEARCH_HINT_PATTERN =
@@ -59,7 +68,7 @@ const COMPOSITE_DISH_SYSTEM_PROMPT = `
 你是中文饮食记录助手，当前任务是把单道复合菜拆成可查库原料。
 
 目标：
-1. 输入一定是一道单独的成品菜或复合主食，例如“辣椒炒肉”“番茄炒蛋”“宫保鸡丁”“火腿蛋炒饭”。
+1. 输入一定是一道单独的成品菜、复合主食、带馅主食或快餐单品，例如“辣椒炒肉”“番茄炒蛋”“宫保鸡丁”“火腿蛋炒饭”“香菇猪肉水饺”“猪肉包子”“巨无霸汉堡”“薯条”。
 2. 输出最常见、最容易命中营养数据库的原料名，不要输出调味步骤、品牌名或口语化废话。
 3. 给出每个原料在这道菜中的实际克重，所有原料 estimatedGrams 之和必须接近整道菜总重量。
 4. 对影响热量或钠含量明显的原料，要包含食用油、盐、酱油等基础调味项。
@@ -73,6 +82,7 @@ const COMPOSITE_DISH_SYSTEM_PROMPT = `
 - confidence 用 0 到 1 表示你对该原料名和克重的把握。
 - fallbackPer100g 只包含宏量营养 4 项；拿不准时给保守中位值，不要输出极端值。
 - 如果用户给了明确总重量，例如“400g辣椒炒肉”，totalEstimatedGrams 应尽量贴近该重量，ingredients 总克重也要贴近。
+- 水饺、包子、馄饨、锅贴、烧卖这类带馅主食，要同时考虑外皮/面皮与主要馅料；汉堡要考虑面包、肉饼、奶酪/酱料；薯条至少要考虑土豆、食用油、盐。
 - 如果是炒菜，通常会包含少量油；如果是带汁菜，可以包含少量盐或酱油；但不要无意义地堆很多调料。
 - 对连锁餐饮或明显带品牌的成品菜，必要时可联网参考公开配料、份量或营养信息，但不要直接照搬营销文案。
 `;
@@ -82,6 +92,10 @@ const NULLABLE_NON_NEGATIVE_SCHEMA = {
     {type: 'number', minimum: 0},
     {type: 'null'},
   ],
+} as const;
+
+const FLEXIBLE_REVIEW_RESPONSE_JSON_SCHEMA = {
+  type: 'array',
 } as const;
 
 const RESPONSE_JSON_SCHEMA = {
@@ -245,13 +259,13 @@ const COMPOSITE_RESPONSE_JSON_SCHEMA = {
   additionalProperties: false,
 };
 
-type QwenUsageMetadata = {
+type PrimaryModelUsageMetadata = {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
 };
 
-type QwenChatCompletionResponse = {
+type PrimaryModelChatCompletionResponse = {
   choices?: Array<{
     message?: {
       content?: string | null;
@@ -261,7 +275,7 @@ type QwenChatCompletionResponse = {
   error?: {
     message?: string;
   };
-  usage?: QwenUsageMetadata;
+  usage?: PrimaryModelUsageMetadata;
 };
 
 type CandidateValidationIssue = {
@@ -270,53 +284,120 @@ type CandidateValidationIssue = {
   issues: string[];
 };
 
-function getDashScopeApiKey(): string {
+function getPrimaryModelApiKey(): string {
+  const openRouterApiKey = process.env.OPENROUTER_API_KEY?.trim();
+  if (openRouterApiKey) {
+    return openRouterApiKey;
+  }
+
   const apiKey = process.env.DASHSCOPE_API_KEY ?? process.env.BAILIAN_API_KEY;
   if (!apiKey) {
-    throw new Error('DASHSCOPE_API_KEY is not configured.');
+    throw new Error('OPENROUTER_API_KEY or DASHSCOPE_API_KEY is not configured.');
   }
   return apiKey;
 }
 
-function getDashScopeApiBaseUrl(): string {
+function getPrimaryModelApiBaseUrl(): string {
   return (
-    process.env.DASHSCOPE_BASE_URL ?? 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    process.env.OPENROUTER_BASE_URL ??
+    process.env.DASHSCOPE_BASE_URL ??
+    'https://dashscope.aliyuncs.com/compatible-mode/v1'
   ).replace(/\/$/, '');
 }
 
-function getQwenModel(): string {
-  return process.env.QWEN_MODEL ?? 'qwen3.5-plus';
+function readStringEnv(names: string | string[]): string | undefined {
+  for (const name of Array.isArray(names) ? names : [names]) {
+    const value = process.env[name]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
 }
 
-function readBooleanEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name]?.trim().toLowerCase();
-  if (!raw) {
-    return fallback;
+function getPrimaryModelId(): string {
+  const configuredModel = readStringEnv([
+    'OPENROUTER_MODEL',
+    'PRIMARY_MODEL_ID',
+    'DASHSCOPE_MODEL',
+  ]);
+  if (configuredModel) {
+    return configuredModel;
   }
 
-  if (['1', 'true', 'yes', 'on'].includes(raw)) {
-    return true;
+  if (getPrimaryModelProvider() === 'openrouter') {
+    return 'xiaomi/mimo-v2-pro';
   }
 
-  if (['0', 'false', 'no', 'off'].includes(raw)) {
-    return false;
+  throw new Error('PRIMARY_MODEL_ID or OPENROUTER_MODEL is not configured.');
+}
+
+function getPrimaryModelProvider(): 'openrouter' | 'dashscope' {
+  return process.env.OPENROUTER_API_KEY?.trim() ? 'openrouter' : 'dashscope';
+}
+
+function getPrimaryModelDisplayName(): string {
+  return '主模型';
+}
+
+function buildPrimaryModelHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${getPrimaryModelApiKey()}`,
+  };
+
+  if (getPrimaryModelProvider() === 'openrouter') {
+    const httpReferer = process.env.OPENROUTER_HTTP_REFERER?.trim() || process.env.APP_BASE_URL?.trim();
+    const appName = process.env.OPENROUTER_APP_NAME?.trim() || 'fitness-food';
+
+    if (httpReferer) {
+      headers['HTTP-Referer'] = httpReferer;
+    }
+
+    headers['X-Title'] = appName;
+  }
+
+  return headers;
+}
+
+function readBooleanEnv(names: string | string[], fallback: boolean): boolean {
+  for (const name of Array.isArray(names) ? names : [names]) {
+    const raw = process.env[name]?.trim().toLowerCase();
+    if (!raw) {
+      continue;
+    }
+
+    if (['1', 'true', 'yes', 'on'].includes(raw)) {
+      return true;
+    }
+
+    if (['0', 'false', 'no', 'off'].includes(raw)) {
+      return false;
+    }
   }
 
   return fallback;
 }
 
-function readPositiveIntegerEnv(name: string): number | undefined {
-  const raw = process.env[name]?.trim();
-  if (!raw) {
-    return undefined;
+function readPositiveIntegerEnv(names: string | string[]): number | undefined {
+  for (const name of Array.isArray(names) ? names : [names]) {
+    const raw = process.env[name]?.trim();
+    if (!raw) {
+      continue;
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
   }
 
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  return undefined;
 }
 
-function getQwenSearchStrategy(): 'turbo' | 'max' {
-  const raw = process.env.QWEN_SEARCH_STRATEGY?.trim().toLowerCase();
+function getPrimaryModelSearchStrategy(): 'turbo' | 'max' {
+  const raw = readStringEnv('PRIMARY_MODEL_SEARCH_STRATEGY')?.toLowerCase();
   if (raw === 'max') {
     return 'max';
   }
@@ -325,41 +406,133 @@ function getQwenSearchStrategy(): 'turbo' | 'max' {
   return 'turbo';
 }
 
-function getQwenRequestTimeoutMs(): number {
-  const override = readPositiveIntegerEnv('QWEN_REQUEST_TIMEOUT_MS');
+function getPrimaryModelRequestTimeoutMs(): number {
+  const override = readPositiveIntegerEnv([
+    'PRIMARY_MODEL_REQUEST_TIMEOUT_MS',
+  ]);
   if (override) {
     return override;
   }
 
-  const enableThinking = readBooleanEnv('QWEN_ENABLE_THINKING', true);
-  const enableSearch = readBooleanEnv('QWEN_ENABLE_SEARCH', true);
+  const enableThinking = readBooleanEnv(
+    'PRIMARY_MODEL_ENABLE_THINKING',
+    true
+  );
+  const enableSearch = readBooleanEnv(
+    'PRIMARY_MODEL_ENABLE_SEARCH',
+    true
+  );
   return enableThinking || enableSearch
     ? ENHANCED_REQUEST_TIMEOUT_MS
     : DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
-function buildQwenRequestOptions(allowSearch: boolean) {
-  const enableThinking = readBooleanEnv('QWEN_ENABLE_THINKING', true);
+function getPrimaryModelReviewRequestTimeoutMs(): number {
+  const override = readPositiveIntegerEnv([
+    'PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS',
+  ]);
+  if (override) {
+    return override;
+  }
+
+  return REVIEW_REQUEST_TIMEOUT_MS;
+}
+
+function getPrimaryModelReviewMaxAttempts(): number {
+  return readPositiveIntegerEnv([
+    'PRIMARY_MODEL_REVIEW_MAX_ATTEMPTS',
+  ]) ?? 1;
+}
+
+function getPrimaryModelReviewMaxOutputTokens(): number {
+  return readPositiveIntegerEnv([
+    'PRIMARY_MODEL_REVIEW_MAX_TOKENS',
+  ]) ?? REVIEW_MAX_OUTPUT_TOKENS;
+}
+
+function buildPrimaryModelRequestOptions(allowSearch: boolean) {
+  if (getPrimaryModelProvider() === 'openrouter') {
+    return {};
+  }
+
+  const enableThinking = readBooleanEnv(
+    'PRIMARY_MODEL_ENABLE_THINKING',
+    true
+  );
   const thinkingBudget = enableThinking
-    ? readPositiveIntegerEnv('QWEN_THINKING_BUDGET')
+    ? readPositiveIntegerEnv('PRIMARY_MODEL_THINKING_BUDGET')
     : undefined;
-  const enableSearch = allowSearch && readBooleanEnv('QWEN_ENABLE_SEARCH', true);
+  const enableSearch = allowSearch && readBooleanEnv(
+    'PRIMARY_MODEL_ENABLE_SEARCH',
+    true
+  );
   const forcedSearch = enableSearch
-    ? readBooleanEnv('QWEN_FORCE_SEARCH', false)
+    ? readBooleanEnv('PRIMARY_MODEL_FORCE_SEARCH', false)
     : false;
   const enableSearchExtension = enableSearch
-    ? readBooleanEnv('QWEN_ENABLE_SEARCH_EXTENSION', false)
+    ? readBooleanEnv('PRIMARY_MODEL_ENABLE_SEARCH_EXTENSION', false)
     : false;
 
   return {
     enable_thinking: enableThinking,
     ...(thinkingBudget ? {thinking_budget: thinkingBudget} : {}),
     ...(enableSearch
-      ? {
+        ? {
           enable_search: true,
           search_options: {
             forced_search: forcedSearch,
-            search_strategy: getQwenSearchStrategy(),
+            search_strategy: getPrimaryModelSearchStrategy(),
+            enable_search_extension: enableSearchExtension,
+          },
+        }
+      : {}),
+  };
+}
+
+function getPrimaryModelReviewSearchStrategy(): 'turbo' | 'max' {
+  const raw = readStringEnv([
+    'PRIMARY_MODEL_REVIEW_SEARCH_STRATEGY',
+  ])?.toLowerCase();
+  if (raw === 'max') {
+    return 'max';
+  }
+
+  return 'turbo';
+}
+
+function buildPrimaryModelReviewRequestOptions(sourceDescription: string) {
+  if (getPrimaryModelProvider() === 'openrouter') {
+    return {};
+  }
+
+  const enableThinking = readBooleanEnv(
+    'PRIMARY_MODEL_REVIEW_ENABLE_THINKING',
+    false
+  );
+  const thinkingBudget = enableThinking
+    ? readPositiveIntegerEnv('PRIMARY_MODEL_REVIEW_THINKING_BUDGET')
+    : undefined;
+  const allowSearch = readBooleanEnv(
+    'PRIMARY_MODEL_REVIEW_ENABLE_SEARCH',
+    false
+  );
+  const forcedSearch = allowSearch
+    ? readBooleanEnv('PRIMARY_MODEL_REVIEW_FORCE_SEARCH', false)
+    : false;
+  const enableSearch = allowSearch && (forcedSearch || shouldUseNetworkSearch(sourceDescription));
+  const enableSearchExtension = enableSearch
+    ? readBooleanEnv('PRIMARY_MODEL_REVIEW_ENABLE_SEARCH_EXTENSION', false)
+    : false;
+
+  return {
+    enable_thinking: enableThinking,
+    ...(thinkingBudget ? {thinking_budget: thinkingBudget} : {}),
+    ...(enableSearch
+        ? {
+          enable_search: true,
+          search_options: {
+            forced_search: forcedSearch,
+            search_strategy: getPrimaryModelReviewSearchStrategy(),
             enable_search_extension: enableSearchExtension,
           },
         }
@@ -382,7 +555,7 @@ function createJsonSchemaResponseFormat(name: string, schema: object) {
   };
 }
 
-function extractTextContent(payload: QwenChatCompletionResponse): string {
+function extractTextContent(payload: PrimaryModelChatCompletionResponse): string {
   const text = payload.choices?.[0]?.message?.content?.trim();
 
   if (text) {
@@ -390,14 +563,14 @@ function extractTextContent(payload: QwenChatCompletionResponse): string {
   }
 
   throw new Error(
-    `Qwen returned an empty response${payload.choices?.[0]?.finish_reason ? ` (${payload.choices[0].finish_reason})` : ''}.`
+    `${getPrimaryModelDisplayName()} returned an empty response${payload.choices?.[0]?.finish_reason ? ` (${payload.choices[0].finish_reason})` : ''}.`
   );
 }
 
 function extractJsonPayload(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error('Qwen returned an empty JSON payload.');
+    throw new Error(`${getPrimaryModelDisplayName()} returned an empty JSON payload.`);
   }
 
   try {
@@ -417,10 +590,107 @@ function extractJsonPayload(text: string): unknown {
     return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
   }
 
-  throw new Error('Unable to extract JSON from Qwen response.');
+  throw new Error(`Unable to extract JSON from ${getPrimaryModelDisplayName()} response.`);
 }
 
-async function requestQwenJsonArray(
+function normalizeNutritionNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number.parseFloat(value)
+        : Number.NaN;
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeNutritionProfilePayload(payload: unknown): NutritionProfile23 {
+  const record = payload && typeof payload === 'object'
+    ? (payload as Record<string, unknown>)
+    : {};
+
+  return createNutritionProfile({
+    energyKcal: normalizeNutritionNumber(record.energyKcal ?? record.calories ?? record.energy),
+    proteinGrams: normalizeNutritionNumber(record.proteinGrams ?? record.protein),
+    carbohydrateGrams: normalizeNutritionNumber(
+      record.carbohydrateGrams ?? record.carbohydrates ?? record.carbs
+    ),
+    fatGrams: normalizeNutritionNumber(record.fatGrams ?? record.fat),
+    fiberGrams: normalizeNutritionNumber(record.fiberGrams ?? record.fiber),
+    sugarsGrams: normalizeNutritionNumber(record.sugarsGrams ?? record.sugar ?? record.sugars),
+    sodiumMg: normalizeNutritionNumber(record.sodiumMg ?? record.sodium),
+    potassiumMg: normalizeNutritionNumber(record.potassiumMg ?? record.potassium),
+    calciumMg: normalizeNutritionNumber(record.calciumMg ?? record.calcium),
+    magnesiumMg: normalizeNutritionNumber(record.magnesiumMg ?? record.magnesium),
+    ironMg: normalizeNutritionNumber(record.ironMg ?? record.iron),
+    zincMg: normalizeNutritionNumber(record.zincMg ?? record.zinc),
+    vitaminAMcg: normalizeNutritionNumber(record.vitaminAMcg ?? record.vitaminA),
+    vitaminCMg: normalizeNutritionNumber(record.vitaminCMg ?? record.vitaminC),
+    vitaminDMcg: normalizeNutritionNumber(record.vitaminDMcg ?? record.vitaminD),
+    vitaminEMg: normalizeNutritionNumber(record.vitaminEMg ?? record.vitaminE),
+    vitaminKMcg: normalizeNutritionNumber(record.vitaminKMcg ?? record.vitaminK),
+    thiaminMg: normalizeNutritionNumber(record.thiaminMg ?? record.vitaminB1),
+    riboflavinMg: normalizeNutritionNumber(record.riboflavinMg ?? record.vitaminB2),
+    niacinMg: normalizeNutritionNumber(record.niacinMg ?? record.vitaminB3 ?? record.niacin),
+    vitaminB6Mg: normalizeNutritionNumber(record.vitaminB6Mg ?? record.vitaminB6),
+    vitaminB12Mcg: normalizeNutritionNumber(record.vitaminB12Mcg ?? record.vitaminB12),
+    folateMcg: normalizeNutritionNumber(record.folateMcg ?? record.vitaminB9 ?? record.folate),
+  });
+}
+
+function normalizeParsedItemsPayload(payload: unknown): unknown {
+  if (!Array.isArray(payload)) {
+    return payload;
+  }
+
+  return payload.map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return entry;
+    }
+
+    const record = entry as Record<string, unknown>;
+    return {
+      foodName: record.foodName ?? record.name ?? record.food,
+      quantityDescription:
+        record.quantityDescription ?? record.quantity ?? record.quantity_label ?? '未知',
+      estimatedGrams: record.estimatedGrams ?? record.grams ?? record.weightGrams ?? record.weight,
+      confidence: record.confidence,
+      fallbackPer100g: normalizeNutritionProfilePayload(
+        record.fallbackPer100g ?? record.per100g ?? record.per100 ?? record.nutritionPer100g
+      ),
+    };
+  });
+}
+
+function normalizeReviewedItemsPayload(payload: unknown): unknown {
+  if (!Array.isArray(payload)) {
+    return payload;
+  }
+
+  return payload.map((entry) => {
+    if (!entry || typeof entry !== 'object') {
+      return entry;
+    }
+
+    const record = entry as Record<string, unknown>;
+    return {
+      index: record.index,
+      foodName: record.foodName ?? record.name ?? record.food,
+      estimatedGrams: record.estimatedGrams ?? record.grams ?? record.weightGrams ?? record.weight,
+      confidence: record.confidence,
+      reason: record.reason,
+      reviewedPer100g: normalizeNutritionProfilePayload(
+        record.reviewedPer100g ?? record.per100g ?? record.reviewed_per_100g ?? record.reviewed_per100g
+      ),
+    };
+  });
+}
+
+async function requestPrimaryModelJsonArray(
   prompt: string,
   systemPrompt: string,
   maxOutputTokens: number,
@@ -431,26 +701,23 @@ async function requestQwenJsonArray(
   const startedAt = Date.now();
   let lastError: unknown;
   let retryPromptSuffix = '';
-  let lastUsageMetadata: QwenUsageMetadata | undefined;
+  let lastUsageMetadata: PrimaryModelUsageMetadata | undefined;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), getQwenRequestTimeoutMs());
+    const timeout = setTimeout(() => controller.abort(), getPrimaryModelRequestTimeoutMs());
 
     try {
       const response = await fetch(
-        `${getDashScopeApiBaseUrl()}/chat/completions`,
+        `${getPrimaryModelApiBaseUrl()}/chat/completions`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${getDashScopeApiKey()}`,
-          },
+          headers: buildPrimaryModelHeaders(),
           body: JSON.stringify({
-            model: getQwenModel(),
+            model: getPrimaryModelId(),
             temperature: 0,
             max_tokens: maxOutputTokens,
-            ...buildQwenRequestOptions(options?.allowSearch ?? true),
+            ...buildPrimaryModelRequestOptions(options?.allowSearch ?? true),
             messages: [
               {
                 role: 'system',
@@ -474,18 +741,18 @@ async function requestQwenJsonArray(
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(
-          `Qwen request failed with ${response.status}: ${errorText.slice(0, 240)}`
+          `${getPrimaryModelDisplayName()} request failed with ${response.status}: ${errorText.slice(0, 240)}`
         );
       }
 
-      const payload = (await response.json()) as QwenChatCompletionResponse;
+      const payload = (await response.json()) as PrimaryModelChatCompletionResponse;
       lastUsageMetadata = payload.usage ?? lastUsageMetadata;
       if (payload.error?.message) {
         throw new Error(payload.error.message);
       }
 
       const text = extractTextContent(payload);
-      const jsonPayload = extractJsonPayload(text);
+      const jsonPayload = normalizeParsedItemsPayload(extractJsonPayload(text));
       const parsedItems = AiParsedFoodItemsSchema.parse(jsonPayload);
       const issues = validateParsedItems(parsedItems);
       if (!issues.length) {
@@ -500,8 +767,8 @@ async function requestQwenJsonArray(
           fallbackValidationIssues: [],
         }));
         await recordAiUsageTelemetry({
-          provider: 'qwen',
-          model: getQwenModel(),
+          provider: getPrimaryModelProvider(),
+          model: getPrimaryModelId(),
           requestKind: 'parse_food_candidates',
           inputPreview: prompt.slice(0, 220),
           promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
@@ -517,8 +784,8 @@ async function requestQwenJsonArray(
       if (attempt === MAX_ATTEMPTS) {
         const result = sanitizeInvalidFallbackProfiles(parsedItems);
         await recordAiUsageTelemetry({
-          provider: 'qwen',
-          model: getQwenModel(),
+          provider: getPrimaryModelProvider(),
+          model: getPrimaryModelId(),
           requestKind: 'parse_food_candidates',
           inputPreview: prompt.slice(0, 220),
           promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
@@ -532,7 +799,9 @@ async function requestQwenJsonArray(
       }
 
       retryPromptSuffix = `\n\n上一次返回的 fallbackPer100g 不可信，请修正以下问题后重新返回完整 JSON：\n${formatValidationIssues(issues)}`;
-      lastError = new Error(`Qwen fallbackPer100g validation failed: ${formatValidationIssues(issues)}`);
+      lastError = new Error(
+        `Primary model fallbackPer100g validation failed: ${formatValidationIssues(issues)}`
+      );
       await new Promise((resolve) =>
         setTimeout(resolve, RETRY_DELAY_MS * Math.max(1, 2 ** (attempt - 1)))
       );
@@ -552,8 +821,8 @@ async function requestQwenJsonArray(
 
   if (lastError instanceof Error && lastError.name === 'AbortError') {
     await recordAiUsageTelemetry({
-      provider: 'qwen',
-      model: getQwenModel(),
+      provider: getPrimaryModelProvider(),
+      model: getPrimaryModelId(),
       requestKind: 'parse_food_candidates',
       inputPreview: prompt.slice(0, 220),
       promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
@@ -562,14 +831,16 @@ async function requestQwenJsonArray(
       durationMs: Date.now() - startedAt,
       attemptCount: MAX_ATTEMPTS,
       success: false,
-      errorMessage: 'Qwen request timed out.',
+      errorMessage: `${getPrimaryModelDisplayName()} request timed out.`,
     });
-    throw new Error('Qwen request timed out. Please try again in a moment.');
+    throw new Error(
+      `${getPrimaryModelDisplayName()} request timed out. Please try again in a moment.`
+    );
   }
 
   await recordAiUsageTelemetry({
-    provider: 'qwen',
-    model: getQwenModel(),
+    provider: getPrimaryModelProvider(),
+    model: getPrimaryModelId(),
     requestKind: 'parse_food_candidates',
     inputPreview: prompt.slice(0, 220),
     promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
@@ -578,15 +849,20 @@ async function requestQwenJsonArray(
     durationMs: Date.now() - startedAt,
     attemptCount: MAX_ATTEMPTS,
     success: false,
-    errorMessage: lastError instanceof Error ? lastError.message : 'Qwen request failed.',
+    errorMessage:
+      lastError instanceof Error
+        ? lastError.message
+        : `${getPrimaryModelDisplayName()} request failed.`,
   });
-  throw lastError instanceof Error ? lastError : new Error('Qwen request failed.');
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`${getPrimaryModelDisplayName()} request failed.`);
 }
 
-export async function parseFoodCandidatesWithQwen(
+export async function parseFoodCandidatesWithPrimaryModel(
   description: string
 ): Promise<AiParsedFoodItem[]> {
-  return requestQwenJsonArray(
+  return requestPrimaryModelJsonArray(
     `请拆解这句饮食描述，并输出约定的 JSON 数组：\n${description}`,
     SYSTEM_PROMPT,
     2048,
@@ -594,6 +870,203 @@ export async function parseFoodCandidatesWithQwen(
       allowSearch: shouldUseNetworkSearch(description),
     }
   );
+}
+
+function validateReviewedItems(items: AiReviewedFoodItem[]): CandidateValidationIssue[] {
+  return items
+    .map((item, index) => ({
+      index,
+      foodName: item.foodName,
+      issues: validateMacroNutrients(item.reviewedPer100g, 0.12, item.foodName),
+    }))
+    .filter((item) => item.issues.length > 0);
+}
+
+function sanitizeReviewedProfiles(items: AiReviewedFoodItem[]): AiReviewedFoodItem[] {
+  return items.map((item) => {
+    const sanitized = sanitizeFallbackNutritionProfile(item.foodName, item.reviewedPer100g);
+    return {
+      ...item,
+      confidence: sanitized.issues.length ? Math.min(item.confidence, 0.45) : item.confidence,
+      reviewedPer100g: sanitized.profile,
+      reason:
+        sanitized.issues.length && item.reason === '待人工确认'
+          ? '营养值已保守修正'
+          : item.reason,
+    };
+  });
+}
+
+async function requestPrimaryModelReviewJsonArray(
+  sourceDescription: string,
+  foods: Parameters<typeof buildSecondaryReviewPrompt>[1],
+  weightLocks: boolean[]
+): Promise<AiReviewedFoodItem[]> {
+  const prompt = buildSecondaryReviewPrompt(sourceDescription, foods, weightLocks);
+  const startedAt = Date.now();
+  const maxAttempts = getPrimaryModelReviewMaxAttempts();
+  let lastError: unknown;
+  let retryPromptSuffix = '';
+  let lastUsageMetadata: PrimaryModelUsageMetadata | undefined;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      getPrimaryModelReviewRequestTimeoutMs()
+    );
+
+    try {
+      const response = await fetch(
+        `${getPrimaryModelApiBaseUrl()}/chat/completions`,
+        {
+          method: 'POST',
+          headers: buildPrimaryModelHeaders(),
+          body: JSON.stringify({
+            model: getPrimaryModelId(),
+            temperature: 0,
+            max_tokens: getPrimaryModelReviewMaxOutputTokens(),
+            ...buildPrimaryModelReviewRequestOptions(sourceDescription),
+            messages: [
+              {
+                role: 'system',
+                content: SECONDARY_REVIEW_SYSTEM_PROMPT,
+              },
+              {
+                role: 'user',
+                content: `${prompt}${retryPromptSuffix}`,
+              },
+            ],
+            response_format: createJsonSchemaResponseFormat(
+              'review_resolved_foods',
+              FLEXIBLE_REVIEW_RESPONSE_JSON_SCHEMA
+            ),
+          }),
+          cache: 'no-store',
+          signal: controller.signal,
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `${getPrimaryModelDisplayName()} request failed with ${response.status}: ${errorText.slice(0, 240)}`
+        );
+      }
+
+      const payload = (await response.json()) as PrimaryModelChatCompletionResponse;
+      lastUsageMetadata = payload.usage ?? lastUsageMetadata;
+      if (payload.error?.message) {
+        throw new Error(payload.error.message);
+      }
+
+      const text = extractTextContent(payload);
+      const jsonPayload = normalizeReviewedItemsPayload(extractJsonPayload(text));
+      const reviewedItems = AiReviewedFoodItemsSchema.parse(jsonPayload);
+      const issues = validateReviewedItems(reviewedItems);
+
+      if (!issues.length) {
+        const result = sanitizeReviewedProfiles(reviewedItems);
+        await recordAiUsageTelemetry({
+          provider: getPrimaryModelProvider(),
+          model: getPrimaryModelId(),
+          requestKind: 'review_resolved_foods',
+          inputPreview: prompt.slice(0, 220),
+          promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+          completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+          totalTokens: lastUsageMetadata?.total_tokens ?? null,
+          durationMs: Date.now() - startedAt,
+          attemptCount: attempt,
+          success: true,
+        });
+        return result;
+      }
+
+      if (attempt === maxAttempts) {
+        const result = sanitizeReviewedProfiles(reviewedItems);
+        await recordAiUsageTelemetry({
+          provider: getPrimaryModelProvider(),
+          model: getPrimaryModelId(),
+          requestKind: 'review_resolved_foods',
+          inputPreview: prompt.slice(0, 220),
+          promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+          completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+          totalTokens: lastUsageMetadata?.total_tokens ?? null,
+          durationMs: Date.now() - startedAt,
+          attemptCount: attempt,
+          success: true,
+        });
+        return result;
+      }
+
+      retryPromptSuffix = `\n\n上一次返回的 reviewedPer100g 不可信，请修正以下问题后重新返回完整 JSON：\n${formatValidationIssues(issues)}`;
+      lastError = new Error(
+        `Primary model reviewedPer100g validation failed: ${formatValidationIssues(issues)}`
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, RETRY_DELAY_MS * Math.max(1, 2 ** (attempt - 1)))
+      );
+      continue;
+    } catch (error) {
+      lastError = error;
+      if (attempt === maxAttempts) {
+        break;
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, RETRY_DELAY_MS * Math.max(1, 2 ** (attempt - 1)))
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  if (lastError instanceof Error && lastError.name === 'AbortError') {
+    await recordAiUsageTelemetry({
+      provider: getPrimaryModelProvider(),
+      model: getPrimaryModelId(),
+      requestKind: 'review_resolved_foods',
+      inputPreview: prompt.slice(0, 220),
+      promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+      completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+      totalTokens: lastUsageMetadata?.total_tokens ?? null,
+      durationMs: Date.now() - startedAt,
+      attemptCount: maxAttempts,
+      success: false,
+      errorMessage: `${getPrimaryModelDisplayName()} request timed out.`,
+    });
+    throw new Error(
+      `${getPrimaryModelDisplayName()} request timed out. Please try again in a moment.`
+    );
+  }
+
+  await recordAiUsageTelemetry({
+    provider: getPrimaryModelProvider(),
+    model: getPrimaryModelId(),
+    requestKind: 'review_resolved_foods',
+    inputPreview: prompt.slice(0, 220),
+    promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
+    completionTokens: lastUsageMetadata?.completion_tokens ?? null,
+    totalTokens: lastUsageMetadata?.total_tokens ?? null,
+    durationMs: Date.now() - startedAt,
+    attemptCount: maxAttempts,
+    success: false,
+    errorMessage:
+      lastError instanceof Error
+        ? lastError.message
+        : `${getPrimaryModelDisplayName()} request failed.`,
+  });
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`${getPrimaryModelDisplayName()} request failed.`);
+}
+
+export async function reviewResolvedFoodsWithPrimaryModel(
+  sourceDescription: string,
+  foods: Parameters<typeof buildSecondaryReviewPrompt>[1],
+  weightLocks: boolean[]
+): Promise<AiReviewedFoodItem[]> {
+  return requestPrimaryModelReviewJsonArray(sourceDescription, foods, weightLocks);
 }
 
 function normalizeCompositeDishBreakdown(
@@ -649,7 +1122,7 @@ function normalizeCompositeDishBreakdown(
   };
 }
 
-async function requestQwenJsonObject(
+async function requestPrimaryModelJsonObject(
   prompt: string,
   systemPrompt: string,
   responseJsonSchema: object,
@@ -660,26 +1133,23 @@ async function requestQwenJsonObject(
 ): Promise<AiCompositeDishBreakdown> {
   const startedAt = Date.now();
   let lastError: unknown;
-  let lastUsageMetadata: QwenUsageMetadata | undefined;
+  let lastUsageMetadata: PrimaryModelUsageMetadata | undefined;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), getQwenRequestTimeoutMs());
+    const timeout = setTimeout(() => controller.abort(), getPrimaryModelRequestTimeoutMs());
 
     try {
       const response = await fetch(
-        `${getDashScopeApiBaseUrl()}/chat/completions`,
+        `${getPrimaryModelApiBaseUrl()}/chat/completions`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${getDashScopeApiKey()}`,
-          },
+          headers: buildPrimaryModelHeaders(),
           body: JSON.stringify({
-            model: getQwenModel(),
+            model: getPrimaryModelId(),
             temperature: 0,
             max_tokens: maxOutputTokens,
-            ...buildQwenRequestOptions(options?.allowSearch ?? true),
+            ...buildPrimaryModelRequestOptions(options?.allowSearch ?? true),
             messages: [
               {
                 role: 'system',
@@ -703,11 +1173,11 @@ async function requestQwenJsonObject(
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(
-          `Qwen request failed with ${response.status}: ${errorText.slice(0, 240)}`
+          `${getPrimaryModelDisplayName()} request failed with ${response.status}: ${errorText.slice(0, 240)}`
         );
       }
 
-      const payload = (await response.json()) as QwenChatCompletionResponse;
+      const payload = (await response.json()) as PrimaryModelChatCompletionResponse;
       lastUsageMetadata = payload.usage ?? lastUsageMetadata;
       if (payload.error?.message) {
         throw new Error(payload.error.message);
@@ -719,8 +1189,8 @@ async function requestQwenJsonObject(
       const normalized = normalizeCompositeDishBreakdown(parsed);
 
       await recordAiUsageTelemetry({
-        provider: 'qwen',
-        model: getQwenModel(),
+        provider: getPrimaryModelProvider(),
+        model: getPrimaryModelId(),
         requestKind: 'parse_composite_dish',
         inputPreview: prompt.slice(0, 220),
         promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
@@ -746,8 +1216,8 @@ async function requestQwenJsonObject(
   }
 
   await recordAiUsageTelemetry({
-    provider: 'qwen',
-    model: getQwenModel(),
+    provider: getPrimaryModelProvider(),
+    model: getPrimaryModelId(),
     requestKind: 'parse_composite_dish',
     inputPreview: prompt.slice(0, 220),
     promptTokens: lastUsageMetadata?.prompt_tokens ?? null,
@@ -756,15 +1226,20 @@ async function requestQwenJsonObject(
     durationMs: Date.now() - startedAt,
     attemptCount: MAX_ATTEMPTS,
     success: false,
-    errorMessage: lastError instanceof Error ? lastError.message : 'Qwen request failed.',
+    errorMessage:
+      lastError instanceof Error
+        ? lastError.message
+        : `${getPrimaryModelDisplayName()} request failed.`,
   });
-  throw lastError instanceof Error ? lastError : new Error('Qwen request failed.');
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`${getPrimaryModelDisplayName()} request failed.`);
 }
 
-export async function parseCompositeDishWithQwen(
+export async function parseCompositeDishWithPrimaryModel(
   description: string
 ): Promise<AiCompositeDishBreakdown> {
-  return requestQwenJsonObject(
+  return requestPrimaryModelJsonObject(
     `请把这道复合菜拆成原料 JSON 对象：\n${description}`,
     COMPOSITE_DISH_SYSTEM_PROMPT,
     COMPOSITE_RESPONSE_JSON_SCHEMA,

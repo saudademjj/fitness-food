@@ -57,6 +57,16 @@ const DB_STRICT_VALIDATION_PATTERN =
 
 const CURATED_BRAND_OVERRIDES: CuratedBrandOverrideDefinition[] = [
   {
+    names: ['植物油', '食用油', '烹调油'],
+    matchedName: '植物油',
+    per100g: createNutritionProfile({
+      energyKcal: 884,
+      proteinGrams: 0,
+      carbohydrateGrams: 0,
+      fatGrams: 100,
+    }),
+  },
+  {
     names: ['可口可乐', 'cocacola', 'coca-cola'],
     matchedName: '可口可乐',
     per100g: createNutritionProfile({
@@ -228,10 +238,12 @@ const SHORT_NAME_SEMANTIC_TAILS = [
 ] as const;
 
 const LOOKUP_SYNONYM_GROUPS = [
-  ['辣椒', '青椒', '尖椒', '甜椒', '彩椒'],
+  ['辣椒', '青椒', '尖椒', '甜椒', '彩椒', '螺丝椒'],
   ['番茄', '西红柿'],
   ['土豆', '马铃薯'],
   ['香菜', '芫荽'],
+  ['盐', '食盐'],
+  ['小葱', '葱花', '香葱', '葱'],
   ['豆腐皮', '千张'],
   ['玉米粒', '玉米'],
   ['猪肉末', '猪肉馅', '猪肉'],
@@ -429,7 +441,7 @@ function createCuratedBrandLookupResult(
 
   return {
     sourceKind: 'catalog',
-    sourceLabel: `品牌营养覆盖 · ${definition.matchedName}`,
+    sourceLabel: `营养覆盖 · ${definition.matchedName}`,
     matchedName: definition.matchedName,
     entityId: null,
     entitySlug: null,

@@ -1,7 +1,7 @@
 export const DIRECT_PARSE_MAX_LENGTH = 64;
 export const MULTI_ITEM_SEPARATOR = /[，,、；;\/]/;
 export const COMPOSITE_FOOD_PATTERN =
-  /(炒饭|蛋炒饭|盖饭|拌饭|焖饭|烩饭|煲仔饭|焗饭|炒面|拌面|汤面|拉面|米线|河粉|炒粉|意面|三明治|汉堡|披萨|卷饼|沙拉|套餐|便当|拼盘|火锅|麻辣烫|冒菜|砂锅|小炒|炒菜|盖浇|咖喱饭|寿司|饭团|肉丝|肉片|肉末|蛋花汤|排骨汤|丸子汤)/i;
+  /(炒饭|蛋炒饭|盖饭|拌饭|焖饭|烩饭|煲仔饭|焗饭|炒面|拌面|汤面|拉面|米线|河粉|炒粉|意面|三明治|汉堡|披萨|卷饼|沙拉|套餐|便当|拼盘|火锅|麻辣烫|冒菜|砂锅|小炒|炒菜|盖浇|咖喱饭|寿司|饭团|肉丝|肉片|肉末|蛋花汤|排骨汤|丸子汤|水饺|饺子|包子|馄饨|锅贴|烧卖|薯条)/i;
 export const UNSAFE_FUZZY_MATCH_PATTERN =
   /(婴儿|婴幼儿|快餐|三明治|卷饼|汤|罐装|填料|调味|混合|饼干|松饼|百吉饼|潜艇|咖喱|餐厅|冷冻|晚餐|早餐|幼儿|泥|面包|汉堡)/i;
 export const DANGEROUS_SUFFIX_PATTERN =
@@ -18,39 +18,129 @@ const PREFIX_QUANTITY_PATTERN =
 const SUFFIX_QUANTITY_PATTERN =
   /^(.+?)\s*((?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:g|克|ml|毫升))$/i;
 const CONNECTOR_PATTERN = /(和|以及|还有|外加|配上|搭配|配|跟)/g;
+const PLAIN_CONNECTOR_PATTERN = /(和|以及|还有|外加|配上|搭配|配|跟)/;
 const CONNECTOR_RIGHT_QUANTITY_PATTERN =
   /^\s*(?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)/i;
 const ANY_QUANTITY_PATTERN =
   /(?:约|大约|差不多|大概)?\s*(?:\d+(?:\.\d+)?|半|两|[零一二三四五六七八九十百]+)\s*(?:个|只|颗|块|片|杯|碗|份|盘|盒|瓶|袋|包|串|根|条|勺|罐|ml|毫升|g|克)/i;
 const INTRINSIC_CONNECTOR_DISH_PATTERN = /(汤|羹|煲)$/;
+const STANDALONE_COMPOSITE_TOKEN_PATTERN = /(包子|水饺|饺子|馄饨|锅贴|烧卖|薯条)$/i;
+const CLAUSE_SEPARATOR_PATTERN = /[，,、；;\/]/;
+const PAIRING_SIDE_PATTERN =
+  /(米饭|白饭|炒饭|盖饭|焖饭|烩饭|饭团|便当|套餐|拉面|汤面|炒面|拌面|面条|米线|河粉|粉丝|粉条|意面|肠粉|面|粉|粥|汤|羹|煲|包子|馒头|花卷|烧卖|饺子|锅贴|馄饨|汤圆|面包|汉堡|三明治|卷饼|披萨|薯条|鸡块|可乐|豆浆|牛奶|咖啡|奶茶|果汁)$/i;
+
+function shouldTreatAsStandaloneCompositeToken(value: string): boolean {
+  return STANDALONE_COMPOSITE_TOKEN_PATTERN.test(sanitizeFoodName(normalizeText(value)));
+}
+
+function extractAdjacentClause(
+  context: string,
+  side: 'left' | 'right'
+): string {
+  const normalized = normalizeText(context);
+  if (!normalized) {
+    return '';
+  }
+
+  const clause =
+    side === 'left'
+      ? normalized.split(CLAUSE_SEPARATOR_PATTERN).at(-1)?.trim() ?? ''
+      : normalized.split(CLAUSE_SEPARATOR_PATTERN)[0]?.trim() ?? '';
+
+  if (!clause) {
+    return '';
+  }
+
+  if (side === 'left') {
+    const matches = [...clause.matchAll(CONNECTOR_PATTERN)];
+    if (!matches.length) {
+      return clause;
+    }
+
+    const lastMatch = matches.at(-1);
+    return clause.slice((lastMatch?.index ?? 0) + (lastMatch?.[0].length ?? 0)).trim();
+  }
+
+  const nextConnector = clause.match(PLAIN_CONNECTOR_PATTERN);
+  if (!nextConnector) {
+    return clause;
+  }
+
+  return clause.slice(0, nextConnector.index ?? 0).trim();
+}
+
+function extractFoodNameFromClause(clause: string): string | null {
+  const normalized = normalizeText(clause);
+  if (!normalized) {
+    return null;
+  }
+
+  const prefixMatch = normalized.match(PREFIX_QUANTITY_PATTERN);
+  if (prefixMatch) {
+    return sanitizeFoodName(prefixMatch[2] ?? '') || null;
+  }
+
+  const suffixMatch = normalized.match(SUFFIX_QUANTITY_PATTERN);
+  if (suffixMatch) {
+    return sanitizeFoodName(suffixMatch[1] ?? '') || null;
+  }
+
+  return sanitizeFoodName(normalized) || null;
+}
+
+function isPairingSideFood(foodName: string): boolean {
+  return PAIRING_SIDE_PATTERN.test(sanitizeFoodName(normalizeText(foodName)));
+}
 
 function shouldSplitConnector(
   connector: string,
   leftContext: string,
   rightContext: string
 ): boolean {
-  const normalizedLeft = leftContext.trim();
-  const normalizedRight = rightContext.trim();
-  if (!normalizedLeft || !normalizedRight) {
+  const leftClause = extractAdjacentClause(leftContext, 'left');
+  const rightClause = extractAdjacentClause(rightContext, 'right');
+  if (!leftClause || !rightClause) {
     return false;
   }
 
-  if (CONNECTOR_RIGHT_QUANTITY_PATTERN.test(normalizedRight)) {
+  if (CONNECTOR_RIGHT_QUANTITY_PATTERN.test(rightClause)) {
     return true;
   }
 
+  const leftFoodName = extractFoodNameFromClause(leftClause);
+  const rightFoodName = extractFoodNameFromClause(rightClause);
+  if (!leftFoodName || !rightFoodName) {
+    return false;
+  }
+
+  const leftComposite =
+    isCompositeFoodName(leftFoodName) ||
+    shouldTreatAsStandaloneCompositeToken(leftFoodName);
+  const rightComposite =
+    isCompositeFoodName(rightFoodName) ||
+    shouldTreatAsStandaloneCompositeToken(rightFoodName);
+  const leftPairing = isPairingSideFood(leftFoodName);
+  const rightPairing = isPairingSideFood(rightFoodName);
+
   if (/(以及|还有|外加|配上|搭配|配)/.test(connector)) {
-    return ANY_QUANTITY_PATTERN.test(normalizedRight);
+    return ANY_QUANTITY_PATTERN.test(rightClause) || leftPairing || rightPairing;
   }
 
   if (
     /(和|跟)/.test(connector) &&
-    !INTRINSIC_CONNECTOR_DISH_PATTERN.test(normalizedLeft) &&
-    !INTRINSIC_CONNECTOR_DISH_PATTERN.test(normalizedRight) &&
-    !isCompositeFoodName(normalizedLeft) &&
-    !isCompositeFoodName(normalizedRight) &&
-    normalizedLeft.length <= 8 &&
-    normalizedRight.length <= 8
+    ((leftComposite && rightPairing) || (rightComposite && leftPairing))
+  ) {
+    return true;
+  }
+
+  if (
+    /(和|跟)/.test(connector) &&
+    !INTRINSIC_CONNECTOR_DISH_PATTERN.test(leftFoodName) &&
+    !INTRINSIC_CONNECTOR_DISH_PATTERN.test(rightFoodName) &&
+    !leftComposite &&
+    !rightComposite &&
+    leftFoodName.length <= 8 &&
+    rightFoodName.length <= 8
   ) {
     return true;
   }
@@ -250,6 +340,10 @@ export function extractWholeDishCandidate(
 ): ExtractedFoodCandidate | null {
   const stripped = stripContext(description);
   if (!stripped) {
+    return null;
+  }
+
+  if (MULTI_ITEM_SEPARATOR.test(normalizeItemSeparators(stripped))) {
     return null;
   }
 

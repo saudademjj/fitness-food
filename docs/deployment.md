@@ -1,32 +1,54 @@
 # 部署说明
 
-## 1. 准备 DashScope / Qwen API
+## 1. 准备主模型与 reviewer 配置
 
-建议在阿里云百炼创建 API key，并把它放进应用环境变量里：
+默认推荐 OpenRouter 作为主模型入口：
+
+```env
+OPENROUTER_API_KEY=<your_openrouter_key>
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=xiaomi/mimo-v2-pro
+PRIMARY_MODEL_ENABLE_THINKING=true
+PRIMARY_MODEL_ENABLE_SEARCH=true
+PRIMARY_MODEL_FORCE_SEARCH=false
+PRIMARY_MODEL_SEARCH_STRATEGY=turbo
+PRIMARY_MODEL_REQUEST_TIMEOUT_MS=45000
+```
+
+如果你需要切回 DashScope 兼容接口，也可以改成：
 
 ```env
 DASHSCOPE_API_KEY=<your_dashscope_key>
-QWEN_MODEL=qwen3.5-plus
-QWEN_ENABLE_THINKING=true
-QWEN_ENABLE_SEARCH=true
-QWEN_FORCE_SEARCH=false
-QWEN_SEARCH_STRATEGY=turbo
-QWEN_REQUEST_TIMEOUT_MS=45000
-```
-
-如果你需要显式覆盖 API 地址，也可以额外设置：
-
-```env
 DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+PRIMARY_MODEL_ID=qwen3.5-plus
 ```
 
 说明：
 
-- `QWEN_ENABLE_THINKING=true` 会开启推理思考
-- `QWEN_ENABLE_SEARCH=true` 会开启联网搜索能力
-- `QWEN_FORCE_SEARCH=false` 表示只在模型判断有必要时联网，避免每次饮食解析都额外增加延迟与成本
-- `QWEN_SEARCH_STRATEGY=turbo` 更适合当前饮食解析这种低延迟场景；如果你更看重检索深度，可以改成 `max`
-- `QWEN_REQUEST_TIMEOUT_MS=45000` 给思考和联网请求预留更长超时时间，避免品牌食品场景下过早超时
+- `PRIMARY_MODEL_ENABLE_THINKING=true` 会开启推理思考
+- `PRIMARY_MODEL_ENABLE_SEARCH=true` 会开启联网搜索能力
+- `PRIMARY_MODEL_FORCE_SEARCH=false` 表示只在模型判断有必要时联网，避免每次饮食解析都额外增加延迟与成本
+- `PRIMARY_MODEL_SEARCH_STRATEGY=turbo` 更适合当前饮食解析这种低延迟场景；如果你更看重检索深度，可以改成 `max`
+- `PRIMARY_MODEL_REQUEST_TIMEOUT_MS=45000` 给思考和联网请求预留更长超时时间，避免品牌食品场景下过早超时
+
+额外 reviewer 中，OpenRouter MiniMax 现在默认走 `minimax/minimax-m2.7`，并固定优先使用 MiniMax 提供商。如果你想显式控制，可以这样配：
+
+```env
+SECONDARY_REVIEW_ENABLE_OPENROUTER_MINIMAX=true
+OPENROUTER_MINIMAX_REVIEW_MODEL=minimax/minimax-m2.7
+OPENROUTER_MINIMAX_REVIEW_PROVIDER_ORDER=minimax
+OPENROUTER_MINIMAX_REVIEW_ALLOW_FALLBACKS=false
+OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS=30000
+SECONDARY_REVIEW_ENABLE_DEEPSEEK=false
+# 如果启用 DeepSeek reviewer，再单独配置它自己的超时：
+# DEEPSEEK_REQUEST_TIMEOUT_MS=45000
+```
+
+说明：
+
+- 当前三类 reviewer 的实际超时分别由 `PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS`、`OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS`、`DEEPSEEK_REQUEST_TIMEOUT_MS` 控制。
+- `SECONDARY_REVIEW_TIMEOUT_MS / SECONDARY_REVIEW_PROVIDER_TIMEOUT_MS` 这类外层总超时不再用于当前 reviewer 链路，避免聚合层比 provider 更早把请求判成“未返回”。
+- 2026-03-20 的线上排查里，`minimax/minimax-m2.5:free` 在 OpenRouter 多次出现上游 429；现网已切到 `minimax/minimax-m2.7` 并固定 `provider=minimax`。
 
 ## 2. 本地开发连接 PostgreSQL
 
@@ -100,7 +122,7 @@ PGPASSWORD=<your-password>
 ## 4. 成本控制建议
 
 - 简单单品描述先直接查库，避免每次都走模型
-- Qwen 只在提交自然语言饮食描述时调用一次
+- 主模型只在数据库无法直接命中时调用一次
 - 前端调滑块不再请求模型
-- 数据库优先，模型只负责识别和兜底
+- 数据库优先，模型只负责识别、复合菜拆解和兜底
 - 保持请求长度限制和 IP 限流，避免白白消耗额度

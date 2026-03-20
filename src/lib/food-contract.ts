@@ -40,6 +40,9 @@ const NutritionProfileMeta23Schema = z.object(
 export const ValidationFlagSchema = z.enum([
   'ai_macro_estimate',
   'ai_macro_clamped',
+  'ai_secondary_reviewed',
+  'ai_secondary_adjusted',
+  'ai_secondary_review_failed',
   'db_lookup_miss',
   'db_candidate_rejected',
   'db_candidate_thermodynamic_mismatch',
@@ -93,6 +96,57 @@ export const AiParsedFoodItemSchema = z.object({
 
 export const AiParsedFoodItemsSchema = z.array(AiParsedFoodItemSchema).min(1);
 
+export const AiReviewedFoodItemSchema = z.object({
+  index: z.coerce.number().int().min(0),
+  foodName: z.string().trim().min(1),
+  estimatedGrams: z.coerce.number().positive(),
+  confidence: z.coerce.number().min(0).max(1).catch(0.5),
+  reason: z.string().trim().min(1).catch('待人工确认'),
+  reviewedPer100g: NutritionProfile23Schema,
+});
+
+export const AiReviewedFoodItemsSchema = z.array(AiReviewedFoodItemSchema).min(1);
+
+export const ReviewerVoteSchema = z.object({
+  provider: z.string().trim().min(1),
+  providerLabel: z.string().trim().min(1),
+  supportsConsensus: z.coerce.boolean(),
+  agreementScore: z.coerce.number().min(0).max(1),
+  estimatedGrams: z.union([z.coerce.number().positive(), z.null()]).default(null),
+  confidence: z.union([z.coerce.number().min(0).max(1), z.null()]).default(null),
+  reason: z.string().trim().min(1).nullable().default(null),
+});
+
+export const FoodReviewMetaSchema = z.object({
+  attempted: z.coerce.boolean(),
+  reviewerCount: z.coerce.number().int().nonnegative(),
+  successfulReviewerCount: z.coerce.number().int().nonnegative(),
+  voteCount: z.coerce.number().int().nonnegative(),
+  consensusScore: z.coerce.number().min(0).max(1),
+  verdict: z.enum(['high', 'medium', 'low', 'failed']),
+  summaryLabel: z.string().trim().min(1),
+  providers: z.array(z.string()).default([]),
+  successfulProviders: z.array(z.string()).default([]),
+  failedProviders: z.array(z.string()).default([]),
+  votes: z.array(ReviewerVoteSchema).default([]),
+});
+
+export const SecondaryReviewSummarySchema = z.object({
+  attempted: z.coerce.boolean(),
+  succeeded: z.coerce.boolean(),
+  providerCount: z.coerce.number().int().nonnegative(),
+  successfulReviewerCount: z.coerce.number().int().nonnegative(),
+  voteCount: z.coerce.number().int().nonnegative(),
+  consensusScore: z.coerce.number().min(0).max(1),
+  changedItemCount: z.coerce.number().int().nonnegative(),
+  adjustedWeightCount: z.coerce.number().int().nonnegative(),
+  adjustedNutritionCount: z.coerce.number().int().nonnegative(),
+  providers: z.array(z.string()).default([]),
+  successfulProviders: z.array(z.string()).default([]),
+  failedProviders: z.array(z.string()).default([]),
+  failureReason: z.string().trim().min(1).nullable().default(null),
+});
+
 const MacroOnlyProfileSchema = NutritionProfile23Schema.pick({
   energyKcal: true,
   proteinGrams: true,
@@ -131,6 +185,7 @@ export const ResolvedFoodItemSchema = z.object({
   per100gMeta: NutritionProfileMeta23Schema,
   totals: NutritionProfile23Schema,
   totalsMeta: NutritionProfileMeta23Schema,
+  reviewMeta: FoodReviewMetaSchema.nullable().optional(),
 });
 
 export const ResolvedFoodItemsSchema = z.array(ResolvedFoodItemSchema);
@@ -161,11 +216,16 @@ export const ParseFoodDescriptionOutputSchema = z.object({
   overallConfidence: z.coerce.number().min(0).max(1),
   items: ResolvedFoodItemsSchema,
   segments: z.array(ParseFoodDescriptionSegmentSchema).min(1),
+  secondaryReviewSummary: SecondaryReviewSummarySchema.nullable().optional(),
 });
 
 export {NutritionProfile23Schema, NutritionProfileMeta23Schema, NutrientDatumMetaSchema};
 export type ParseFoodDescriptionInput = z.infer<typeof ParseFoodDescriptionInputSchema>;
 export type AiParsedFoodItem = z.infer<typeof AiParsedFoodItemSchema>;
+export type AiReviewedFoodItem = z.infer<typeof AiReviewedFoodItemSchema>;
+export type ReviewerVote = z.infer<typeof ReviewerVoteSchema>;
+export type FoodReviewMeta = z.infer<typeof FoodReviewMetaSchema>;
+export type SecondaryReviewSummary = z.infer<typeof SecondaryReviewSummarySchema>;
 export type AiCompositeDishBreakdown = z.infer<typeof AiCompositeDishBreakdownSchema>;
 export type AiCompositeDishIngredient = z.infer<typeof AiCompositeDishIngredientSchema>;
 export type ParseFoodDescriptionOutput = z.infer<typeof ParseFoodDescriptionOutputSchema>;

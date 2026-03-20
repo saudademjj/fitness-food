@@ -2,7 +2,7 @@
 
 import type {FoodLogEntry} from '@/components/macro-calculator/types';
 import {parseFoodDescription} from '@/ai/flows/parse-food-description-flow';
-import type {ResolvedFoodItem, ResolvedFoodItems} from '@/lib/food-contract';
+import type {ParseFoodDescriptionOutput, ResolvedFoodItem, ResolvedFoodItems} from '@/lib/food-contract';
 import {isCompositeFoodName, sanitizeFoodName} from '@/lib/food-text';
 import {
   createNutritionLookupResolver,
@@ -20,6 +20,7 @@ import {
   migrateLocalDraftEntries,
   updateFoodLogItem,
 } from '@/lib/food-log-db';
+import {applySecondaryReviewToOutput, buildParseOutputFromFoods} from '@/lib/secondary-review';
 import {requireViewer} from '@/lib/auth';
 
 export async function listFoodLogEntriesAction(date?: string): Promise<FoodLogEntry[]> {
@@ -221,11 +222,21 @@ async function refreshEntryForMigration(
   };
 }
 
-export async function resolveEditedFoodsAction(
-  foods: ResolvedFoodItems
-): Promise<ResolvedFoodItems> {
+export async function reviewEditedFoodsAction(
+  foods: ResolvedFoodItems,
+  sourceDescription?: string | null
+): Promise<ParseFoodDescriptionOutput> {
   const lookupResolver = createNutritionLookupResolver();
-  return Promise.all(foods.map((food) => resolveEditedFood(food, lookupResolver)));
+  const resolvedFoods = await Promise.all(foods.map((food) => resolveEditedFood(food, lookupResolver)));
+  const baseOutput = buildParseOutputFromFoods(resolvedFoods, sourceDescription);
+  const reviewed = await applySecondaryReviewToOutput({
+    sourceDescription:
+      sourceDescription?.trim() || resolvedFoods[0]?.foodName || '已编辑食物',
+    output: baseOutput,
+    lockExplicitMetricWeights: false,
+  });
+
+  return reviewed.output;
 }
 
 export async function updateFoodLogItemAction(

@@ -12,6 +12,7 @@ import {
 import {resolveCompositeDishFromRecipe, resolveCompositeDishWithAiIngredients} from '@/lib/composite-dish';
 import {tryResolveDirectDescription} from '@/lib/direct-food-parser';
 import {
+  extractMultiFoodCandidates,
   extractSingleFoodCandidate,
   extractWholeDishCandidate,
   isCompositeFoodName,
@@ -19,7 +20,7 @@ import {
   sanitizeFoodName,
   splitFoodDescriptionSegments,
 } from '@/lib/food-text';
-import {parseFoodCandidatesWithQwen} from '@/lib/qwen';
+import {parseFoodCandidatesWithPrimaryModel} from '@/lib/primary-model';
 import {
   aggregateNutritionProfiles,
   createNutritionProfile,
@@ -33,6 +34,7 @@ import {
 } from '@/lib/nutrition-db';
 import {buildResolvedFood} from '@/lib/resolved-food';
 import {recordFoodParseTelemetry, recordRuntimeError, type WeightResolutionTrace} from '@/lib/runtime-observability';
+import {applySecondaryReviewToOutput} from '@/lib/secondary-review';
 import {dedupeValidationFlags} from '@/lib/validation';
 
 type WeightedResolution = {
@@ -329,8 +331,12 @@ async function buildWholeDishDbSegment(
 async function resolveAiCandidates(
   description: string,
   lookupResolver: NutritionLookupResolver
-): Promise<{items: ResolvedFoodItems; traces: WeightResolutionTrace[]}> {
-  const candidates = await parseFoodCandidatesWithQwen(description);
+): Promise<{
+  items: ResolvedFoodItems;
+  traces: WeightResolutionTrace[];
+  ingredientBreakdown: ResolvedFoodItems;
+}> {
+  const candidates = await parseFoodCandidatesWithPrimaryModel(description);
   const resolved = await Promise.all(
     candidates.map(async (candidate) => {
       const normalizedCandidate = sanitizeCandidate(candidate);
@@ -338,6 +344,23 @@ async function resolveAiCandidates(
         allowFuzzy: !isCompositeFoodName(normalizedCandidate.foodName),
         recordMiss: true,
       });
+
+      if (!dbMatch && isCompositeFoodName(normalizedCandidate.foodName)) {
+        const compositeSegment = await resolveCompositeDishWithAiIngredients(
+          {
+            foodName: normalizedCandidate.foodName,
+            quantityDescription: normalizedCandidate.quantityDescription,
+          },
+          lookupResolver
+        );
+
+        return {
+          item: compositeSegment.items[0]!,
+          trace: null,
+          ingredientBreakdown: compositeSegment.ingredientBreakdown,
+        };
+      }
+
       const estimated = await chooseEstimatedGrams(normalizedCandidate, dbMatch?.matchedName);
       const item = buildResolvedFood({
         foodName: normalizedCandidate.foodName,
@@ -369,25 +392,37 @@ async function resolveAiCandidates(
       return {
         item,
         trace: estimated.trace,
+        ingredientBreakdown: [] as ResolvedFoodItems,
       };
     })
   );
 
   const items = resolved.map((entry) => entry.item);
-  const targetTotalWeight = await determineTargetTotalWeight(description, items);
-  const rebalancedItems = rebalanceResolvedFoods(items, targetTotalWeight);
+  const ingredientBreakdown = resolved.flatMap((entry) => entry.ingredientBreakdown);
+  const targetTotalWeight =
+    ingredientBreakdown.length > 0
+      ? null
+      : await determineTargetTotalWeight(description, items);
+  const rebalancedItems =
+    ingredientBreakdown.length > 0
+      ? items
+      : rebalanceResolvedFoods(items, targetTotalWeight);
 
   return {
     items: rebalancedItems,
-    traces: resolved.map((entry) => entry.trace),
+    traces: resolved
+      .map((entry) => entry.trace)
+      .filter((trace): trace is WeightResolutionTrace => Boolean(trace)),
+    ingredientBreakdown,
   };
 }
 
-async function resolveDescriptionSegment(
+export async function resolveDescriptionSegment(
   description: string,
   lookupResolver: NutritionLookupResolver
 ): Promise<{segment: ParseFoodDescriptionSegment; traces: WeightResolutionTrace[]}> {
   try {
+    const likelyMultiFood = Boolean(extractMultiFoodCandidates(description)?.length);
     const directlyResolvedFoods = await tryResolveDirectDescription(description, lookupResolver);
     if (directlyResolvedFoods?.length) {
       const directCandidate =
@@ -425,6 +460,19 @@ async function resolveDescriptionSegment(
             : 'direct_items'
         ),
         traces: [],
+      };
+    }
+
+    if (likelyMultiFood) {
+      const aiResolved = await resolveAiCandidates(description, lookupResolver);
+      return {
+        segment: buildSegmentFromItems(
+          description,
+          aiResolved.items,
+          'ai_items',
+          aiResolved.ingredientBreakdown
+        ),
+        traces: aiResolved.traces,
       };
     }
 
@@ -466,7 +514,12 @@ async function resolveDescriptionSegment(
 
     const aiResolved = await resolveAiCandidates(description, lookupResolver);
     return {
-      segment: buildSegmentFromItems(description, aiResolved.items, 'ai_items'),
+      segment: buildSegmentFromItems(
+        description,
+        aiResolved.items,
+        'ai_items',
+        aiResolved.ingredientBreakdown
+      ),
       traces: aiResolved.traces,
     };
   } catch (error) {
@@ -507,7 +560,7 @@ export async function parseFoodDescription(
       meta: item.totalsMeta,
     }))
   );
-  const output = ParseFoodDescriptionOutputSchema.parse({
+  const initialOutput = ParseFoodDescriptionOutputSchema.parse({
     compositeDishName:
       resolvedSegments.length === 1 ? resolvedSegments[0]?.compositeDishName ?? null : null,
     totalNutrition: totals.profile,
@@ -518,10 +571,18 @@ export async function parseFoodDescription(
     segments: resolvedSegments,
   });
 
+  const reviewed = await applySecondaryReviewToOutput({
+    sourceDescription: parsedInput.description,
+    output: initialOutput,
+    lockExplicitMetricWeights: true,
+  });
+  const output = ParseFoodDescriptionOutputSchema.parse(reviewed.output);
+
   await recordFoodParseTelemetry({
     description: parsedInput.description,
     output,
     weightResolutionTraces: segmentResults.flatMap((result) => result.traces),
+    secondaryReview: reviewed.summary,
   });
 
   return output;

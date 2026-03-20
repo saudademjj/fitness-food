@@ -11,6 +11,9 @@ import {
 export type ValidationFlag =
   | 'ai_macro_estimate'
   | 'ai_macro_clamped'
+  | 'ai_secondary_reviewed'
+  | 'ai_secondary_adjusted'
+  | 'ai_secondary_review_failed'
   | 'db_lookup_miss'
   | 'db_candidate_rejected'
   | 'db_candidate_thermodynamic_mismatch'

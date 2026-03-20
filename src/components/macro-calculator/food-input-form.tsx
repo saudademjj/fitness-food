@@ -66,7 +66,7 @@ export function FoodInputForm({ onFoodsParsed }: FoodInputFormProps) {
           食物录入
         </CardTitle>
         <CardDescription>
-          用自然语言描述您吃了什么。系统会先尝试直接命中营养数据库，复杂描述再交给 Qwen 3.5 Plus 拆解和估算。
+          用自然语言描述您吃了什么。系统会先尝试直接命中营养数据库，复杂描述再交给主模型拆解和估算。
         </CardDescription>
       </CardHeader>
       <CardContent>

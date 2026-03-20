@@ -1,4 +1,70 @@
-import type {ResolvedFoodItem} from '@/lib/food-contract';
+import type {FoodReviewMeta, ResolvedFoodItem} from '@/lib/food-contract';
+
+export function getReviewerLabel(provider: string): string {
+  switch (provider) {
+    case 'primary_model':
+    case 'openrouter':
+    case 'dashscope':
+      return '主模型';
+    case 'minimax':
+      return 'MiniMax';
+    case 'deepseek':
+      return 'DeepSeek';
+    default:
+      return provider;
+  }
+}
+
+export function getReviewVerdictMeta(reviewMeta: FoodReviewMeta): {
+  label: string;
+  badgeClass: string;
+  hintClass: string;
+  description: string;
+} {
+  const providerText = reviewMeta.providers.length
+    ? reviewMeta.providers.map(getReviewerLabel).join(' / ')
+    : '复核模型';
+  const successText = `${reviewMeta.successfulReviewerCount}/${reviewMeta.reviewerCount}`;
+  const supportText = `${reviewMeta.voteCount}/${reviewMeta.reviewerCount}`;
+  const scoreText = `${Math.round(reviewMeta.consensusScore * 100)} 分`;
+
+  if (reviewMeta.verdict === 'failed') {
+    const insufficientConsensus = reviewMeta.successfulReviewerCount > 0;
+    return {
+      label: insufficientConsensus ? '多模型未形成共识' : '多模型复核失败',
+      badgeClass: 'border-amber-300 bg-amber-50 text-amber-800',
+      hintClass: 'border-amber-200 bg-amber-50 text-amber-900',
+      description: insufficientConsensus
+        ? `${providerText} 本轮仅 ${successText} 返回，未达到最少双 reviewer 共识门槛，当前仍展示复核前结果，建议人工确认。`
+        : `${providerText} 本轮仅 ${successText} 返回，未形成可用共识，当前仍展示复核前结果，建议人工确认。`,
+    };
+  }
+
+  if (reviewMeta.verdict === 'high') {
+    return {
+      label: '三模型高一致',
+      badgeClass: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+      hintClass: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+      description: `${providerText} 已返回 ${successText}，其中 ${supportText} 支持当前结果，共识分 ${scoreText}，可直接作为优先参考。`,
+    };
+  }
+
+  if (reviewMeta.verdict === 'medium') {
+    return {
+      label: '三模型基本一致',
+      badgeClass: 'border-sky-200 bg-sky-50 text-sky-700',
+      hintClass: 'border-sky-200 bg-sky-50 text-sky-800',
+      description: `${providerText} 已返回 ${successText}，其中 ${supportText} 支持当前结果，共识分 ${scoreText}，建议结合分量再看一眼。`,
+    };
+  }
+
+  return {
+    label: '三模型存在分歧',
+    badgeClass: 'border-amber-300 bg-amber-50 text-amber-800',
+    hintClass: 'border-amber-200 bg-amber-50 text-amber-900',
+    description: `${providerText} 已返回 ${successText}，但只有 ${supportText} 支持当前结果，共识分 ${scoreText}，建议重点核对重量和食物名称。`,
+  };
+}
 
 export function getSourceKindLabel(sourceKind: ResolvedFoodItem['sourceKind']): string {
   if (sourceKind === 'recipe') {
@@ -29,7 +95,7 @@ export function getMatchModeLabel(matchMode: ResolvedFoodItem['matchMode']): str
 export function getReliabilityMeta(
   item: Pick<
     ResolvedFoodItem,
-    'sourceKind' | 'matchMode' | 'confidence' | 'validationFlags'
+    'sourceKind' | 'matchMode' | 'confidence' | 'validationFlags' | 'reviewMeta'
   >
 ): {
   label: string;
@@ -37,6 +103,10 @@ export function getReliabilityMeta(
   hintClass: string;
   description: string;
 } {
+  if (item.reviewMeta) {
+    return getReviewVerdictMeta(item.reviewMeta);
+  }
+
   if (item.validationFlags.includes('brand_curated_override')) {
     return {
       label: '品牌营养覆盖',
@@ -47,6 +117,31 @@ export function getReliabilityMeta(
           ? '已跳过命中的异常数据库候选，改用经过人工校准的品牌营养档案。'
           : '这项命中了人工校准的品牌营养档案，适合处理数据库缺口或明显异常的高频品牌食物。',
     };
+  }
+
+  if (item.validationFlags.includes('ai_secondary_review_failed')) {
+    return {
+      label: '二次复核失败',
+      badgeClass: 'border-amber-300 bg-amber-50 text-amber-800',
+      hintClass: 'border-amber-200 bg-amber-50 text-amber-900',
+      description: '这次二次 AI 复核没有成功，当前展示的是复核前结果，建议再人工确认一次重量与营养。',
+    };
+  }
+
+  if (item.validationFlags.includes('ai_secondary_adjusted')) {
+    return item.sourceKind === 'ai_fallback'
+      ? {
+          label: 'AI 二次复核已调整',
+          badgeClass: 'border-amber-300 bg-amber-50 text-amber-800',
+          hintClass: 'border-amber-200 bg-amber-50 text-amber-900',
+          description: '这项结果已在首轮解析后再次调用 AI 复核，并对重量或营养做了修正，建议重点确认。',
+        }
+      : {
+          label: '数据库结果已复核',
+          badgeClass: 'border-sky-200 bg-sky-50 text-sky-700',
+          hintClass: 'border-sky-200 bg-sky-50 text-sky-800',
+          description: '数据库已测量字段被保留，二次 AI 复核只补充了缺失营养或修正了估算重量。',
+        };
   }
 
   if (
@@ -132,6 +227,12 @@ export function formatValidationFlag(flag: ResolvedFoodItem['validationFlags'][n
       return '营养值来自 AI 估算';
     case 'ai_macro_clamped':
       return 'AI 营养值已保守修正';
+    case 'ai_secondary_reviewed':
+      return '已完成二次 AI 复核';
+    case 'ai_secondary_adjusted':
+      return '二次 AI 复核已调整结果';
+    case 'ai_secondary_review_failed':
+      return '二次 AI 复核失败，已回退原结果';
     case 'db_lookup_miss':
       return '数据库未命中';
     case 'db_candidate_rejected':

@@ -41,7 +41,7 @@ import {
   exportFoodLogsAction,
   listFoodLogEntriesAction,
   migrateLocalEntriesAction,
-  resolveEditedFoodsAction,
+  reviewEditedFoodsAction,
   saveParsedFoodsAction,
   updateFoodLogItemAction,
 } from '@/app/actions/logs';
@@ -73,6 +73,7 @@ export default function MacroHelperPage() {
   const [isLoadingEntries, setIsLoadingEntries] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [editingEntry, setEditingEntry] = useState<FoodLogEntry | null>(null);
+  const [confirmationStage, setConfirmationStage] = useState<'editing' | 'reviewed'>('reviewed');
   const {toast} = useToast();
   const getEntryDateKey = (entry: Pick<FoodLogEntry, 'loggedOn' | 'timestamp'>) =>
     entry.loggedOn ?? getDateKeyFromTimestamp(entry.timestamp);
@@ -219,6 +220,7 @@ export default function MacroHelperPage() {
     setParsedResult(payload.result);
     setPendingDescription(payload.description);
     setEditingEntry(null);
+    setConfirmationStage('reviewed');
     setIsConfirmOpen(true);
   };
 
@@ -231,11 +233,38 @@ export default function MacroHelperPage() {
   }) => {
     setIsConfirming(true);
     try {
-      const resolvedFoods = requiresReconciliation
-        ? await resolveEditedFoodsAction(foods)
-        : foods;
+      if (requiresReconciliation) {
+        const reviewedResult = await reviewEditedFoodsAction(foods, pendingDescription);
+        const reviewFailed = reviewedResult.items.some((item) =>
+          item.validationFlags.includes('ai_secondary_review_failed')
+        );
+        const reviewSummary = reviewedResult.secondaryReviewSummary;
+        const reviewScore = reviewSummary
+          ? `${reviewSummary.voteCount}/${reviewSummary.providerCount} 票 · 共识分 ${Math.round(
+              reviewSummary.consensusScore * 100
+            )}`
+          : null;
+
+        setParsedResult(reviewedResult);
+        setConfirmationStage('reviewed');
+        toast({
+          title: reviewFailed ? '二次复核失败' : '已完成三模型复核',
+          description: reviewFailed
+            ? `当前保留的是复核前结果${
+                reviewSummary
+                  ? `，本轮 ${reviewSummary.successfulReviewerCount}/${reviewSummary.providerCount} 个模型返回。`
+                  : '。'
+              }请人工确认后再决定是否保存。`
+            : reviewScore
+              ? `${reviewScore}，请再确认一次复核后的重量与营养值。`
+              : '请再确认一次复核后的重量与营养值。',
+          variant: reviewFailed ? 'destructive' : undefined,
+        });
+        return;
+      }
+
       if (editingEntry) {
-        const updated = await updateFoodLogItemAction(editingEntry.id, resolvedFoods[0]!);
+        const updated = await updateFoodLogItemAction(editingEntry.id, foods[0]!);
         if (viewer) {
           setServerEntries((current) =>
             current.map((entry) => (entry.id === editingEntry.id ? updated : entry))
@@ -246,7 +275,7 @@ export default function MacroHelperPage() {
               entry.id === editingEntry.id
                 ? {
                     ...entry,
-                    ...resolvedFoods[0],
+                    ...foods[0],
                   }
                 : entry
             )
@@ -259,7 +288,7 @@ export default function MacroHelperPage() {
       } else if (viewer) {
         const eatenAt = buildTimestampForDateKey(selectedDate);
         const created = await saveParsedFoodsAction(
-          resolvedFoods,
+          foods,
           pendingDescription,
           eatenAt,
           selectedDate
@@ -272,7 +301,7 @@ export default function MacroHelperPage() {
       } else {
         const timestamp = buildTimestampForDateKey(selectedDate);
         const draftBatchId = createEntryId();
-        const newEntries: FoodLogEntry[] = resolvedFoods.map((food) => ({
+        const newEntries: FoodLogEntry[] = foods.map((food) => ({
           ...food,
           id: createEntryId(),
           timestamp,
@@ -290,6 +319,7 @@ export default function MacroHelperPage() {
       setParsedResult(null);
       setPendingDescription('');
       setEditingEntry(null);
+      setConfirmationStage('reviewed');
     } catch (error) {
       const description =
         error instanceof Error ? error.message : '保存食物记录失败，请稍后再试。';
@@ -335,6 +365,7 @@ export default function MacroHelperPage() {
       sourceStatus: entry.sourceStatus,
       amountBasisG: entry.amountBasisG,
       validationFlags: entry.validationFlags,
+      reviewMeta: entry.reviewMeta ?? null,
       per100g: entry.per100g,
       per100gMeta: entry.per100gMeta,
       totals: entry.totals,
@@ -347,6 +378,7 @@ export default function MacroHelperPage() {
       totalWeight: entry.estimatedGrams,
       overallConfidence: entry.confidence,
       items: [item],
+      secondaryReviewSummary: null,
       segments: [
         {
           sourceDescription: entry.foodName,
@@ -361,7 +393,12 @@ export default function MacroHelperPage() {
         },
       ],
     });
-    setPendingDescription(entry.foodName);
+    setPendingDescription(
+      entry.quantityDescription && entry.quantityDescription !== '未知'
+        ? `${entry.quantityDescription}${entry.foodName}`
+        : entry.foodName
+    );
+    setConfirmationStage('reviewed');
     setIsConfirmOpen(true);
   };
 
@@ -632,17 +669,31 @@ export default function MacroHelperPage() {
             setIsConfirmOpen(false);
             setEditingEntry(null);
             setParsedResult(null);
+            setConfirmationStage('reviewed');
           }}
           parsedResult={parsedResult}
           onConfirm={handleConfirmFoods}
           isSubmitting={isConfirming}
+          onReviewStateChange={setConfirmationStage}
           dialogTitle={editingEntry ? '编辑历史记录' : '确认食物与重量'}
           dialogDescription={
-            editingEntry
-              ? '修改名称或克重后，系统会重新校验营养值并覆盖原记录。'
-              : '先确认识别结果，再调节名称和克重。整菜总营养和原料明细都会一起展示。'
+            confirmationStage === 'editing'
+              ? '你已经修改了名称或克重。系统会先调用主模型、MiniMax 和 DeepSeek 共同复核，再把最终结果回显给你。'
+              : editingEntry
+                ? '这是当前可保存的复核结果；如继续修改名称或克重，会再次进入三模型复核。'
+                : '首轮结果已完成多模型复核。直接确认即可保存，继续修改则会再次复核。'
           }
-          confirmLabel={editingEntry ? '保存修改' : viewer ? '确认并同步' : '确认并存为草稿'}
+          confirmLabel={
+            confirmationStage === 'editing'
+              ? editingEntry
+                ? '先复核修改'
+                : '先复核结果'
+              : editingEntry
+                ? '保存修改'
+                : viewer
+                  ? '确认并同步'
+                  : '确认并存为草稿'
+          }
         />
       ) : null}
 

@@ -10,6 +10,7 @@ import {
   formatValidationFlag,
   getMatchModeLabel,
   getReliabilityMeta,
+  getReviewerLabel,
   getSourceKindLabel,
 } from '@/lib/source-meta';
 import {NutritionDetailGrid} from '@/components/macro-calculator/nutrition-detail-grid';
@@ -38,13 +39,61 @@ function getBarColor(badgeClass: string): string {
   return 'bg-muted-foreground/30';
 }
 
+function ReviewMetaSummary({
+  reviewMeta,
+}: {
+  reviewMeta: FoodLogEntry['reviewMeta'];
+}) {
+  if (!reviewMeta) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-border/70 bg-card/70 p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline" className="rounded-full border-primary/20 bg-primary/5 text-primary">
+          {reviewMeta.summaryLabel}
+        </Badge>
+        <span className="text-muted-foreground">
+          {reviewMeta.successfulReviewerCount}/{reviewMeta.reviewerCount} 个模型返回
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {reviewMeta.votes.map((vote) => (
+          <Badge
+            key={vote.provider}
+            variant="outline"
+            className={`rounded-full ${
+              vote.supportsConsensus
+                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                : 'border-amber-200 bg-amber-50 text-amber-700'
+            }`}
+          >
+            {vote.providerLabel} · {vote.supportsConsensus ? '支持' : '保留'} ·{' '}
+            {Math.round(vote.agreementScore * 100)}
+          </Badge>
+        ))}
+        {reviewMeta.failedProviders.map((provider) => (
+          <Badge
+            key={provider}
+            variant="outline"
+            className="rounded-full border-amber-200 bg-amber-50 text-amber-700"
+          >
+            {getReviewerLabel(provider)} · 未返回
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function FoodLogList({
   entries,
   onDelete,
   onEdit,
   listTitle = '今日记录',
   emptyTitle = '今天还没有记录任何食物',
-  emptyDescription = '开始输入饮食描述，系统会优先命中营养数据库，复杂描述再交给 Qwen 3.5 Plus 处理。',
+  emptyDescription = '开始输入饮食描述，系统会优先命中营养数据库，复杂描述再交给主模型处理。',
 }: FoodLogListProps) {
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
 
@@ -102,6 +151,7 @@ export function FoodLogList({
                   <div className="mt-2 text-xs text-muted-foreground">
                     {entry.sourceLabel}
                   </div>
+                  <ReviewMetaSummary reviewMeta={entry.reviewMeta} />
 
                   {/* Compact macro summary with mini progress bars */}
                   <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">

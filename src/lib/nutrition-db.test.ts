@@ -145,8 +145,10 @@ test('isSafeFuzzyCandidate rejects short three-character mismatches with differe
 });
 
 test('buildLookupVariants expands common Chinese ingredient synonyms', () => {
-  assert.deepEqual(buildLookupVariants('青椒'), ['青椒', '辣椒', '尖椒', '甜椒', '彩椒']);
+  assert.deepEqual(buildLookupVariants('青椒'), ['青椒', '辣椒', '尖椒', '甜椒', '彩椒', '螺丝椒']);
   assert.deepEqual(buildLookupVariants('猪肉馅'), ['猪肉馅', '猪肉', '猪肉末']);
+  assert.deepEqual(buildLookupVariants('螺丝椒'), ['螺丝椒', '辣椒', '青椒', '尖椒', '甜椒', '彩椒']);
+  assert.deepEqual(buildLookupVariants('盐'), ['盐', '食盐']);
 });
 
 test.after(async () => {

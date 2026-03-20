@@ -1,4 +1,9 @@
-import type {ResolvedFoodItem, ResolvedFoodItems, ValidationFlag} from '@/lib/food-contract';
+import type {
+  FoodReviewMeta,
+  ResolvedFoodItem,
+  ResolvedFoodItems,
+  ValidationFlag,
+} from '@/lib/food-contract';
 import type {FoodLogEntry} from '@/components/macro-calculator/types';
 import {getDbPool} from '@/lib/db';
 import {
@@ -28,6 +33,7 @@ type FoodLogItemRow = {
   source_status: 'published' | 'preview';
   amount_basis_g: number;
   validation_flags: string[] | null;
+  review_meta: FoodReviewMeta | null;
   per100g_profile: NutritionProfile23 | null;
   per100g_meta: NutritionProfileMeta23 | null;
   totals_profile: NutritionProfile23 | null;
@@ -77,6 +83,10 @@ function mapRowToEntry(row: FoodLogItemRow): FoodLogEntry {
   const validationFlags = Array.isArray(row.validation_flags)
     ? (row.validation_flags as ValidationFlag[])
     : [];
+  const reviewMeta =
+    row.review_meta && typeof row.review_meta === 'object'
+      ? (row.review_meta as FoodReviewMeta)
+      : null;
   const per100g = normalizeStoredProfile(row.per100g_profile, {
     energyKcal: Number(row.energy_kcal),
     proteinGrams: Number(row.protein_grams),
@@ -107,6 +117,7 @@ function mapRowToEntry(row: FoodLogItemRow): FoodLogEntry {
     sourceStatus: row.source_status,
     amountBasisG: Number(row.amount_basis_g),
     validationFlags,
+    reviewMeta,
     per100g,
     per100gMeta,
     totals,
@@ -147,6 +158,7 @@ export async function listFoodLogEntries(userId: string, date?: string): Promise
         item.source_status,
         item.amount_basis_g,
         item.validation_flags,
+        item.review_meta,
         item.per100g_profile,
         item.per100g_meta,
         item.totals_profile,
@@ -219,6 +231,7 @@ export async function createFoodLog(
             source_status,
             amount_basis_g,
             validation_flags,
+            review_meta,
             per100g_profile,
             per100g_meta,
             totals_profile,
@@ -234,15 +247,15 @@ export async function createFoodLog(
           )
           VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-            $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb,
-            $16, $17, $18, $19, $20, $21, $22, $23
+            $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb,
+            $17, $18, $19, $20, $21, $22, $23, $24
           )
           RETURNING
             id AS item_id,
             $1::uuid AS food_log_id,
-            $24::timestamptz AS eaten_at,
-            $25::text AS source_description,
-            $26::date AS eaten_on,
+            $25::timestamptz AS eaten_at,
+            $26::text AS source_description,
+            $27::date AS eaten_on,
             food_name,
             quantity_description,
             estimated_grams,
@@ -253,6 +266,7 @@ export async function createFoodLog(
             source_status,
             amount_basis_g,
             validation_flags,
+            review_meta,
             per100g_profile,
             per100g_meta,
             totals_profile,
@@ -278,6 +292,7 @@ export async function createFoodLog(
           food.sourceStatus,
           food.amountBasisG,
           JSON.stringify(food.validationFlags),
+          JSON.stringify(food.reviewMeta ?? null),
           JSON.stringify(food.per100g),
           JSON.stringify(food.per100gMeta),
           JSON.stringify(food.totals),
@@ -335,18 +350,19 @@ export async function updateFoodLogItem(
         source_status = $10,
         amount_basis_g = $11,
         validation_flags = $12::jsonb,
-        per100g_profile = $13::jsonb,
-        per100g_meta = $14::jsonb,
-        totals_profile = $15::jsonb,
-        totals_meta = $16::jsonb,
-        energy_kcal = $17,
-        protein_grams = $18,
-        carbohydrate_grams = $19,
-        fat_grams = $20,
-        total_energy_kcal = $21,
-        total_protein_grams = $22,
-        total_carbohydrate_grams = $23,
-        total_fat_grams = $24,
+        review_meta = $13::jsonb,
+        per100g_profile = $14::jsonb,
+        per100g_meta = $15::jsonb,
+        totals_profile = $16::jsonb,
+        totals_meta = $17::jsonb,
+        energy_kcal = $18,
+        protein_grams = $19,
+        carbohydrate_grams = $20,
+        fat_grams = $21,
+        total_energy_kcal = $22,
+        total_protein_grams = $23,
+        total_carbohydrate_grams = $24,
+        total_fat_grams = $25,
         updated_at = NOW()
       FROM app.food_log fl
       WHERE item.id = $1
@@ -368,6 +384,7 @@ export async function updateFoodLogItem(
         item.source_status,
         item.amount_basis_g,
         item.validation_flags,
+        item.review_meta,
         item.per100g_profile,
         item.per100g_meta,
         item.totals_profile,
@@ -394,6 +411,7 @@ export async function updateFoodLogItem(
       food.sourceStatus,
       food.amountBasisG,
       JSON.stringify(food.validationFlags),
+      JSON.stringify(food.reviewMeta ?? null),
       JSON.stringify(food.per100g),
       JSON.stringify(food.per100gMeta),
       JSON.stringify(food.totals),
@@ -490,6 +508,7 @@ export async function exportFoodLogs(
     'sourceLabel',
     'matchMode',
     'amountBasisG',
+    'reviewMeta',
     'per100gMeta',
     ...NUTRITION_PROFILE_KEYS.map((key) => `per100g.${key}`),
     'totalsMeta',
@@ -510,6 +529,7 @@ export async function exportFoodLogs(
       entry.sourceLabel,
       entry.matchMode,
       String(entry.amountBasisG),
+      JSON.stringify(entry.reviewMeta ?? null),
       JSON.stringify(entry.per100gMeta),
       ...NUTRITION_PROFILE_KEYS.map((key) => String(entry.per100g[key])),
       JSON.stringify(entry.totalsMeta),
@@ -551,6 +571,7 @@ export async function migrateLocalDraftEntries(
       sourceStatus: entry.sourceStatus,
       amountBasisG: entry.amountBasisG,
       validationFlags: entry.validationFlags,
+      reviewMeta: entry.reviewMeta ?? null,
       per100g: entry.per100g,
       per100gMeta: entry.per100gMeta,
       totals: entry.totals,

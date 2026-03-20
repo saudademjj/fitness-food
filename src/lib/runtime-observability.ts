@@ -23,6 +23,14 @@ export async function recordFoodParseTelemetry(payload: {
   description: string;
   output: ParseFoodDescriptionOutput;
   weightResolutionTraces: WeightResolutionTrace[];
+  secondaryReview?: {
+    attempted: boolean;
+    succeeded: boolean;
+    changedItemCount: number;
+    adjustedWeightCount: number;
+    adjustedNutritionCount: number;
+    failureReason?: string | null;
+  };
 }): Promise<void> {
   try {
     const pool = getDbPool();
@@ -79,6 +87,7 @@ export async function recordFoodParseTelemetry(payload: {
           weightResolutionTraces: payload.weightResolutionTraces,
           sourceKinds: payload.output.items.map((item) => item.sourceKind),
           validationFlags: payload.output.items.flatMap((item) => item.validationFlags),
+          secondaryReview: payload.secondaryReview ?? null,
         }),
       ]
     );

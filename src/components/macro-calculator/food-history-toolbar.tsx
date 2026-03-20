@@ -1,15 +1,17 @@
 'use client';
 
-import {Cloud, Download, History} from 'lucide-react';
+import {CalendarDays, ChevronLeft, ChevronRight, Cloud, Download, History} from 'lucide-react';
 
 import type {ViewerState} from '@/components/macro-calculator/types';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
+import {shiftDateKey} from '@/lib/log-date';
 
 type FoodHistoryToolbarProps = {
   onExport: (formatType: 'csv' | 'json') => Promise<void>;
   onSelectedDateChange: (value: string) => void;
   selectedDate: string;
+  today: string;
   viewer: ViewerState;
 };
 
@@ -17,6 +19,7 @@ export function FoodHistoryToolbar({
   onExport,
   onSelectedDateChange,
   selectedDate,
+  today,
   viewer,
 }: FoodHistoryToolbarProps) {
   return (
@@ -32,12 +35,41 @@ export function FoodHistoryToolbar({
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={() => onSelectedDateChange(shiftDateKey(selectedDate, -1))}
+          aria-label="前一天"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
         <Input
           type="date"
           value={selectedDate}
           onChange={(event) => onSelectedDateChange(event.target.value)}
           className="w-[160px] bg-card dark:bg-card/60"
         />
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          onClick={() => onSelectedDateChange(shiftDateKey(selectedDate, 1))}
+          aria-label="后一天"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+        {selectedDate !== today ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="rounded-full"
+            onClick={() => onSelectedDateChange(today)}
+          >
+            <CalendarDays className="mr-1 h-3.5 w-3.5" />
+            今天
+          </Button>
+        ) : null}
         <Button
           variant="outline"
           className="rounded-full"

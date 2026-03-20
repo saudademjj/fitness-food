@@ -15,6 +15,59 @@ export function getDateKeyFromTimestamp(timestamp: number): string {
   return formatLocalDateKey(new Date(timestamp));
 }
 
+export function getTodayDateKey(): string {
+  return formatLocalDateKey(new Date());
+}
+
+export function shiftDateKey(dateKey: string, days: number): string {
+  const match = DATE_KEY_PATTERN.exec(dateKey);
+  if (!match) {
+    return dateKey;
+  }
+
+  const date = new Date(
+    Number.parseInt(match[1]!, 10),
+    Number.parseInt(match[2]!, 10) - 1,
+    Number.parseInt(match[3]!, 10)
+  );
+  date.setDate(date.getDate() + days);
+  return formatLocalDateKey(date);
+}
+
+const CHINESE_DAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'] as const;
+
+export function getChineseDayOfWeek(dateKey: string): string {
+  const match = DATE_KEY_PATTERN.exec(dateKey);
+  if (!match) {
+    return '';
+  }
+
+  const date = new Date(
+    Number.parseInt(match[1]!, 10),
+    Number.parseInt(match[2]!, 10) - 1,
+    Number.parseInt(match[3]!, 10)
+  );
+  return CHINESE_DAYS[date.getDay()]!;
+}
+
+export function getRelativeDateLabel(dateKey: string, todayKey: string): string | null {
+  if (dateKey === todayKey) {
+    return '今日';
+  }
+
+  const yesterday = shiftDateKey(todayKey, -1);
+  if (dateKey === yesterday) {
+    return '昨日';
+  }
+
+  const dayBefore = shiftDateKey(todayKey, -2);
+  if (dateKey === dayBefore) {
+    return '前天';
+  }
+
+  return null;
+}
+
 export function buildTimestampForDateKey(
   dateKey: string,
   referenceDate: Date = new Date()

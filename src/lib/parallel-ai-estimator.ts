@@ -12,6 +12,7 @@ import {
   getReviewerCooldown,
   markReviewerCooldown,
 } from '@/lib/secondary-review-reviewers';
+import {readPositiveIntegerEnv} from '@/lib/env-utils';
 import {recordRuntimeError} from '@/lib/runtime-observability';
 
 export type AiEstimatorId = 'primary_model' | 'minimax' | 'deepseek';
@@ -57,41 +58,71 @@ function getActiveEstimators(): Estimator[] {
   return estimators;
 }
 
+const DEFAULT_GLOBAL_TIMEOUT_MS = 30_000;
+
+function getGlobalTimeoutMs(): number {
+  return readPositiveIntegerEnv('PARALLEL_ESTIMATE_GLOBAL_TIMEOUT_MS', DEFAULT_GLOBAL_TIMEOUT_MS);
+}
+
 export async function parallelAiEstimate(
   description: string
 ): Promise<ParallelEstimationResult> {
   const estimators = getActiveEstimators();
   const totalProviders = estimators.length;
 
-  const settled = await Promise.allSettled(
-    estimators.map(async (estimator) => {
-      const items = await estimator.parse(description);
-      return {provider: estimator.provider, items};
-    })
-  );
-
   const results: AiEstimationResult[] = [];
   const failures: ParallelEstimationResult['failures'] = [];
 
-  for (let i = 0; i < settled.length; i++) {
-    const outcome = settled[i]!;
-    const provider = estimators[i]!.provider;
+  const allSettledPromise = Promise.allSettled(
+    estimators.map(async (estimator) => {
+      try {
+        const items = await estimator.parse(description);
+        results.push({provider: estimator.provider, items});
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push({provider: estimator.provider, error: message});
+        markReviewerCooldown(estimator.provider, message);
+        await recordRuntimeError({
+          scope: 'parallel_ai_estimate',
+          code: 'estimator_failed',
+          message,
+          context: {provider: estimator.provider, description: description.slice(0, 200)},
+        });
+      }
+    })
+  );
 
-    if (outcome.status === 'fulfilled') {
-      results.push(outcome.value);
-    } else {
-      const message = outcome.reason instanceof Error
-        ? outcome.reason.message
-        : String(outcome.reason);
-      failures.push({provider, error: message});
-      markReviewerCooldown(provider, message);
-      await recordRuntimeError({
-        scope: 'parallel_ai_estimate',
-        code: 'estimator_failed',
-        message,
-        context: {provider, description: description.slice(0, 200)},
-      });
-    }
+  const globalTimeoutMs = getGlobalTimeoutMs();
+  const globalTimer = new Promise<'timeout'>((resolve) =>
+    setTimeout(() => resolve('timeout'), globalTimeoutMs)
+  );
+
+  const outcome = await Promise.race([
+    allSettledPromise.then(() => 'all_done' as const),
+    globalTimer,
+  ]);
+
+  if (outcome === 'timeout') {
+    const pending = estimators
+      .filter(
+        (e) =>
+          !results.some((r) => r.provider === e.provider) &&
+          !failures.some((f) => f.provider === e.provider)
+      )
+      .map((e) => e.provider);
+
+    await recordRuntimeError({
+      scope: 'parallel_ai_estimate',
+      code: 'global_timeout',
+      message: `Global timeout after ${globalTimeoutMs}ms; returning ${results.length} partial results. Pending: ${pending.join(', ') || 'none'}`,
+      context: {
+        globalTimeoutMs,
+        completedCount: results.length,
+        failedCount: failures.length,
+        pendingProviders: pending,
+        description: description.slice(0, 200),
+      },
+    });
   }
 
   return {results, failures, totalProviders};

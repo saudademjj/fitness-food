@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 
 import {
   getViewerAction,
@@ -41,11 +41,42 @@ import {useToast} from '@/hooks/use-toast';
 import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
 import {
   buildTimestampForDateKey,
-  formatLocalDateKey,
+  getChineseDayOfWeek,
   getDateKeyFromTimestamp,
+  getRelativeDateLabel,
+  getTodayDateKey,
 } from '@/lib/log-date';
 
-const TODAY = formatLocalDateKey(new Date());
+function useTodayDateKey(): string {
+  const [today, setToday] = useState(() => getTodayDateKey());
+  const todayRef = useRef(today);
+  todayRef.current = today;
+
+  const check = useCallback(() => {
+    const now = getTodayDateKey();
+    if (now !== todayRef.current) {
+      setToday(now);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        check();
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    const timer = setInterval(check, 60_000);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      clearInterval(timer);
+    };
+  }, [check]);
+
+  return today;
+}
 
 type ConfirmationStage = 'editing' | 'reviewed';
 
@@ -103,6 +134,7 @@ function buildPendingDescription(entry: FoodLogEntry): string {
 }
 
 export default function MacroHelperPage() {
+  const today = useTodayDateKey();
   const [localEntries, setLocalEntries] = useState<FoodLogEntry[]>([]);
   const [serverEntries, setServerEntries] = useState<FoodLogEntry[]>([]);
   const [goals, setGoals] = useState<MacroGoals>(DEFAULT_GOALS);
@@ -112,7 +144,7 @@ export default function MacroHelperPage() {
   const [viewer, setViewer] = useState<ViewerState>(null);
   const [authConfigured, setAuthConfigured] = useState(false);
   const [loginEmail, setLoginEmail] = useState('');
-  const [selectedDate, setSelectedDate] = useState(TODAY);
+  const [selectedDate, setSelectedDate] = useState(() => getTodayDateKey());
   const [isLoadingEntries, setIsLoadingEntries] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [editingEntry, setEditingEntry] = useState<FoodLogEntry | null>(null);
@@ -265,6 +297,15 @@ export default function MacroHelperPage() {
 
     void migrateDrafts();
   }, [hasLoadedLocalState, localEntries, selectedDate, toast, viewer]);
+
+  const prevTodayRef = useRef(today);
+  useEffect(() => {
+    const prevToday = prevTodayRef.current;
+    prevTodayRef.current = today;
+    if (prevToday !== today && selectedDate === prevToday) {
+      setSelectedDate(today);
+    }
+  }, [today, selectedDate]);
 
   const handleFoodsParsed = (payload: {
     result: ParseFoodDescriptionOutput;
@@ -492,7 +533,11 @@ export default function MacroHelperPage() {
           ? '确认并同步'
           : '确认并存为草稿';
 
-  const historyTitle = selectedDate === TODAY ? '今日记录' : `${selectedDate} 记录`;
+  const relativeLabel = getRelativeDateLabel(selectedDate, today);
+  const dayOfWeek = getChineseDayOfWeek(selectedDate);
+  const historyTitle = relativeLabel
+    ? `${relativeLabel}记录`
+    : `${selectedDate} ${dayOfWeek} 记录`;
   const historyEmptyTitle = viewer
     ? '这个日期还没有任何历史记录'
     : '这个日期还没有本地草稿';
@@ -523,6 +568,7 @@ export default function MacroHelperPage() {
             onExport={handleExport}
             onSelectedDateChange={setSelectedDate}
             selectedDate={selectedDate}
+            today={today}
             viewer={viewer}
           />
 

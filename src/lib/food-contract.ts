@@ -43,6 +43,10 @@ export const ValidationFlagSchema = z.enum([
   'ai_secondary_reviewed',
   'ai_secondary_adjusted',
   'ai_secondary_review_failed',
+  'ai_cross_validated',
+  'ai_cross_validation_degraded',
+  'ai_consensus_high',
+  'ai_consensus_low',
   'db_lookup_miss',
   'db_candidate_rejected',
   'db_candidate_thermodynamic_mismatch',
@@ -199,6 +203,7 @@ export const ParseFoodDescriptionSegmentSchema = z.object({
     'runtime_recipe_ingredients',
     'runtime_ai_ingredients',
     'ai_items',
+    'ai_cross_validated',
   ]),
   totalNutrition: NutritionProfile23Schema,
   totalNutritionMeta: NutritionProfileMeta23Schema,
@@ -206,6 +211,14 @@ export const ParseFoodDescriptionSegmentSchema = z.object({
   overallConfidence: z.coerce.number().min(0).max(1),
   items: ResolvedFoodItemsSchema,
   ingredientBreakdown: ResolvedFoodItemsSchema.default([]),
+});
+
+export const CrossValidationSummarySchema = z.object({
+  totalProviders: z.coerce.number().int().nonnegative(),
+  successfulProviders: z.array(z.string()).default([]),
+  failedProviders: z.array(z.string()).default([]),
+  averageScore: z.coerce.number().min(0).max(1),
+  consensusLevel: z.enum(['high', 'medium', 'low', 'degraded']),
 });
 
 export const ParseFoodDescriptionOutputSchema = z.object({
@@ -217,9 +230,11 @@ export const ParseFoodDescriptionOutputSchema = z.object({
   items: ResolvedFoodItemsSchema,
   segments: z.array(ParseFoodDescriptionSegmentSchema).min(1),
   secondaryReviewSummary: SecondaryReviewSummarySchema.nullable().optional(),
+  crossValidationSummary: CrossValidationSummarySchema.nullable().optional(),
 });
 
 export {NutritionProfile23Schema, NutritionProfileMeta23Schema, NutrientDatumMetaSchema};
+export type CrossValidationSummaryOutput = z.infer<typeof CrossValidationSummarySchema>;
 export type ParseFoodDescriptionInput = z.infer<typeof ParseFoodDescriptionInputSchema>;
 export type AiParsedFoodItem = z.infer<typeof AiParsedFoodItemSchema>;
 export type AiReviewedFoodItem = z.infer<typeof AiReviewedFoodItemSchema>;

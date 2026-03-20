@@ -119,6 +119,32 @@ export function getReliabilityMeta(
     };
   }
 
+  if (item.validationFlags.includes('ai_cross_validated')) {
+    const isHigh = item.validationFlags.includes('ai_consensus_high');
+    return isHigh
+      ? {
+          label: '三模型高一致',
+          badgeClass: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+          hintClass: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+          description: '三个独立 AI 模型并行估算后交叉验证，结果高度一致，可直接作为优先参考。',
+        }
+      : {
+          label: '三模型交叉验证',
+          badgeClass: 'border-sky-200 bg-sky-50 text-sky-700',
+          hintClass: 'border-sky-200 bg-sky-50 text-sky-800',
+          description: '三个独立 AI 模型并行估算后交叉验证，结果已取共识中位值，建议结合分量核对。',
+        };
+  }
+
+  if (item.validationFlags.includes('ai_cross_validation_degraded')) {
+    return {
+      label: '交叉验证降级',
+      badgeClass: 'border-amber-300 bg-amber-50 text-amber-800',
+      hintClass: 'border-amber-200 bg-amber-50 text-amber-900',
+      description: '本次仅有部分 AI 模型返回结果，交叉验证为降级模式，建议重点人工确认。',
+    };
+  }
+
   if (item.validationFlags.includes('ai_secondary_review_failed')) {
     return {
       label: '二次复核失败',
@@ -233,6 +259,14 @@ export function formatValidationFlag(flag: ResolvedFoodItem['validationFlags'][n
       return '二次 AI 复核已调整结果';
     case 'ai_secondary_review_failed':
       return '二次 AI 复核失败，已回退原结果';
+    case 'ai_cross_validated':
+      return '已完成三模型交叉验证';
+    case 'ai_cross_validation_degraded':
+      return '交叉验证降级（部分模型未返回）';
+    case 'ai_consensus_high':
+      return '三模型估算高度一致';
+    case 'ai_consensus_low':
+      return '三模型估算存在分歧';
     case 'db_lookup_miss':
       return '数据库未命中';
     case 'db_candidate_rejected':

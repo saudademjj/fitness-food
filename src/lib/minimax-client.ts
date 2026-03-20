@@ -1,14 +1,26 @@
 import {recordAiUsageTelemetry} from '@/lib/ai-usage-telemetry';
 import {
+  ESTIMATION_SYSTEM_PROMPT,
+  ESTIMATION_RESPONSE_JSON_SCHEMA,
+  normalizeParsedItemsPayload,
+  extractJsonPayload as extractJsonPayloadShared,
+} from '@/lib/ai-estimation-prompt';
+import {
+  AiParsedFoodItemsSchema,
   AiReviewedFoodItemsSchema,
+  type AiParsedFoodItem,
   type AiReviewedFoodItem,
 } from '@/lib/food-contract';
 import {readStringEnv} from '@/lib/env-utils';
+import {buildNutritionProfileMeta} from '@/lib/nutrition-profile';
 import {
   buildSecondaryReviewPrompt,
   SECONDARY_REVIEW_SYSTEM_PROMPT,
 } from '@/lib/secondary-review-prompt';
-import {sanitizeFallbackNutritionProfile} from '@/lib/validation';
+import {
+  sanitizeFallbackNutritionProfile,
+  validateMacroNutrients,
+} from '@/lib/validation';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
 const DEFAULT_MODEL_ID = 'MiniMax-M2.7';
@@ -64,6 +76,16 @@ function getMiniMaxTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
+function getMiniMaxParseTimeoutMs(): number {
+  const raw = readStringEnv(['MINIMAX_PARSE_TIMEOUT_MS']);
+  if (!raw) {
+    return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
 function getMiniMaxReviewModel(): string {
   return (
     readStringEnv([
@@ -72,6 +94,10 @@ function getMiniMaxReviewModel(): string {
       'SECONDARY_REVIEW_MINIMAX_MODEL',
     ]) ?? DEFAULT_MODEL_ID
   );
+}
+
+function getMiniMaxParseModel(): string {
+  return readStringEnv(['MINIMAX_PARSE_MODEL']) ?? getMiniMaxReviewModel();
 }
 
 function buildMiniMaxHeaders(): Record<string, string> {
@@ -99,7 +125,7 @@ function extractTextContent(payload: MiniMaxChatCompletionResponse): string {
       .trim();
   }
 
-  throw new Error('MiniMax returned an empty review response.');
+  throw new Error('MiniMax returned an empty response.');
 }
 
 function normalizeMiniMaxErrorMessage(status: number, errorText: string): string {
@@ -107,29 +133,7 @@ function normalizeMiniMaxErrorMessage(status: number, errorText: string): string
 }
 
 function extractJsonPayload(text: string): unknown {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    throw new Error('MiniMax returned an empty JSON payload.');
-  }
-
-  try {
-    return JSON.parse(trimmed);
-  } catch {}
-
-  const fencedMatch =
-    trimmed.match(/```json\s*([\s\S]*?)```/i) ??
-    trimmed.match(/```\s*([\s\S]*?)```/i);
-  if (fencedMatch?.[1]) {
-    return JSON.parse(fencedMatch[1].trim());
-  }
-
-  const arrayStart = trimmed.indexOf('[');
-  const arrayEnd = trimmed.lastIndexOf(']');
-  if (arrayStart >= 0 && arrayEnd > arrayStart) {
-    return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
-  }
-
-  throw new Error('Unable to extract JSON from MiniMax response.');
+  return extractJsonPayloadShared(text, 'MiniMax');
 }
 
 function normalizeReviewedItemsPayload(payload: unknown): unknown {
@@ -173,6 +177,38 @@ function sanitizeReviewedItems(items: AiReviewedFoodItem[]): AiReviewedFoodItem[
   });
 }
 
+function sanitizeParsedItems(items: AiParsedFoodItem[]): AiParsedFoodItem[] {
+  return items.map((item) => {
+    const issues = validateMacroNutrients(item.fallbackPer100g, 0.12, item.foodName);
+    if (!issues.length) {
+      return {
+        ...item,
+        fallbackPer100gMeta: buildNutritionProfileMeta(item.fallbackPer100g, {
+          knownStatus: 'estimated',
+          knownSource: 'ai',
+          missingSource: 'ai',
+        }),
+        fallbackAdjusted: false,
+        fallbackValidationIssues: [],
+      };
+    }
+
+    const sanitized = sanitizeFallbackNutritionProfile(item.foodName, item.fallbackPer100g);
+    return {
+      ...item,
+      confidence: Math.min(item.confidence, 0.45),
+      fallbackPer100g: sanitized.profile,
+      fallbackPer100gMeta: buildNutritionProfileMeta(sanitized.profile, {
+        knownStatus: 'estimated',
+        knownSource: 'ai',
+        missingSource: 'ai',
+      }),
+      fallbackAdjusted: sanitized.adjusted,
+      fallbackValidationIssues: sanitized.remainingIssues,
+    };
+  });
+}
+
 export function getMiniMaxReviewerModel(): {
   provider: 'minimax';
   model: string;
@@ -185,6 +221,129 @@ export function getMiniMaxReviewerModel(): {
     provider: 'minimax',
     model: getMiniMaxReviewModel(),
   };
+}
+
+export function isMiniMaxConfigured(): boolean {
+  return Boolean(getMiniMaxApiKey());
+}
+
+export async function parseFoodCandidatesWithMiniMax(
+  description: string
+): Promise<AiParsedFoodItem[]> {
+  if (!getMiniMaxApiKey()) {
+    throw new Error('MINIMAX_API_KEY is not configured.');
+  }
+
+  const model = getMiniMaxParseModel();
+  const prompt = `请拆解这句饮食描述，并输出约定的 JSON 数组：\n${description}`;
+  const startedAt = Date.now();
+  let lastError: unknown;
+  let lastUsage: UsageMetadata | undefined;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), getMiniMaxParseTimeoutMs());
+
+    try {
+      const response = await fetch(`${getMiniMaxBaseUrl()}/chat/completions`, {
+        method: 'POST',
+        headers: buildMiniMaxHeaders(),
+        body: JSON.stringify({
+          model,
+          temperature: 0,
+          max_tokens: 2048,
+          messages: [
+            {
+              role: 'system',
+              content: ESTIMATION_SYSTEM_PROMPT,
+            },
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'food_candidates',
+              strict: true,
+              schema: ESTIMATION_RESPONSE_JSON_SCHEMA,
+            },
+          },
+        }),
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(normalizeMiniMaxErrorMessage(response.status, errorText));
+      }
+
+      const payload = (await response.json()) as MiniMaxChatCompletionResponse;
+      lastUsage = payload.usage ?? lastUsage;
+      if (payload.error?.message) {
+        throw new Error(payload.error.message);
+      }
+
+      const text = extractTextContent(payload);
+      const jsonPayload = normalizeParsedItemsPayload(extractJsonPayload(text));
+      const parsed = AiParsedFoodItemsSchema.parse(jsonPayload);
+      const sanitized = sanitizeParsedItems(parsed);
+
+      await recordAiUsageTelemetry({
+        provider: 'minimax',
+        model,
+        requestKind: 'parallel_estimate_minimax',
+        inputPreview: prompt.slice(0, 220),
+        promptTokens: lastUsage?.prompt_tokens ?? null,
+        completionTokens: lastUsage?.completion_tokens ?? null,
+        totalTokens: lastUsage?.total_tokens ?? null,
+        durationMs: Date.now() - startedAt,
+        attemptCount: attempt,
+        success: true,
+      });
+      return sanitized;
+    } catch (error) {
+      lastError = error;
+      if (attempt === MAX_ATTEMPTS) {
+        break;
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, RETRY_DELAY_MS * Math.max(1, 2 ** (attempt - 1)))
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  const errorMessage =
+    lastError instanceof Error && lastError.name === 'AbortError'
+      ? 'MiniMax parse request timed out.'
+      : lastError instanceof Error
+        ? lastError.message
+        : 'MiniMax parse failed.';
+
+  await recordAiUsageTelemetry({
+    provider: 'minimax',
+    model,
+    requestKind: 'parallel_estimate_minimax',
+    inputPreview: prompt.slice(0, 220),
+    promptTokens: lastUsage?.prompt_tokens ?? null,
+    completionTokens: lastUsage?.completion_tokens ?? null,
+    totalTokens: lastUsage?.total_tokens ?? null,
+    durationMs: Date.now() - startedAt,
+    attemptCount: MAX_ATTEMPTS,
+    success: false,
+    errorMessage,
+  });
+
+  if (lastError instanceof Error && lastError.name === 'AbortError') {
+    throw new Error('MiniMax parse request timed out.');
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('MiniMax parse failed.');
 }
 
 export async function reviewResolvedFoodsWithMiniMax(

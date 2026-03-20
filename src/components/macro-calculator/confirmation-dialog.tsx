@@ -49,6 +49,66 @@ function formatNutritionCardValue(value: number | null, status: 'measured' | 'es
   return `${status === 'partial' ? '>= ' : ''}${value.toFixed(1)} ${unit}`;
 }
 
+function CrossValidationSummaryCard({
+  summary,
+}: {
+  summary: ParseFoodDescriptionOutput['crossValidationSummary'];
+}) {
+  if (!summary) {
+    return null;
+  }
+
+  const consensusLabel =
+    summary.consensusLevel === 'high'
+      ? '三模型高度一致'
+      : summary.consensusLevel === 'medium'
+        ? '三模型基本一致'
+        : summary.consensusLevel === 'low'
+          ? '三模型存在分歧'
+          : '交叉验证降级';
+
+  const consensusBadgeClass =
+    summary.consensusLevel === 'high'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+      : summary.consensusLevel === 'medium'
+        ? 'border-sky-200 bg-sky-50 text-sky-700'
+        : 'border-amber-200 bg-amber-50 text-amber-700';
+
+  return (
+    <div className="rounded-2xl border border-primary/20 bg-primary/[0.04] p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-primary">三模型并行交叉验证</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {consensusLabel} · 平均分 {Math.round(summary.averageScore * 100)}
+          </div>
+        </div>
+        <Badge variant="outline" className={`rounded-full ${consensusBadgeClass}`}>
+          {summary.successfulProviders.length}/{summary.totalProviders} 返回
+        </Badge>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {[...summary.successfulProviders, ...summary.failedProviders].map((provider) => {
+          const succeeded = summary.successfulProviders.includes(provider);
+          return (
+            <Badge
+              key={provider}
+              variant="outline"
+              className={`rounded-full ${
+                succeeded
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : 'border-amber-200 bg-amber-50 text-amber-700'
+              }`}
+            >
+              {getReviewerLabel(provider)} {succeeded ? '已返回' : '未返回'}
+            </Badge>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function SecondaryReviewSummaryCard({
   summary,
 }: {
@@ -222,6 +282,7 @@ export function ConfirmationDialog({
 
         <ScrollArea className="h-[520px] px-6 py-4">
           <div className="space-y-6">
+            <CrossValidationSummaryCard summary={parsedResult.crossValidationSummary} />
             <SecondaryReviewSummaryCard summary={parsedResult.secondaryReviewSummary} />
             {parsedResult.segments.map((segment, index) => (
               <div

@@ -3,11 +3,11 @@ import {readBooleanEnv, readPositiveIntegerEnv} from '@/lib/env-utils';
 import {
   getDeepseekReviewModel,
   reviewResolvedFoodsWithDeepseek,
-} from '@/lib/deepseek';
+} from '@/lib/deepseek-client';
 import {
   getMiniMaxReviewerModel,
   reviewResolvedFoodsWithMiniMax,
-} from '@/lib/minimax-review';
+} from '@/lib/minimax-client';
 import {reviewResolvedFoodsWithPrimaryModel} from '@/lib/primary-model';
 
 export type SecondaryReviewer = {

@@ -2,17 +2,30 @@ import OpenAI from 'openai';
 
 import {recordAiUsageTelemetry} from '@/lib/ai-usage-telemetry';
 import {
+  ESTIMATION_SYSTEM_PROMPT,
+  normalizeParsedItemsPayload,
+  extractJsonPayload as extractJsonPayloadShared,
+} from '@/lib/ai-estimation-prompt';
+import {
+  AiParsedFoodItemsSchema,
   AiReviewedFoodItemsSchema,
+  type AiParsedFoodItem,
   type AiReviewedFoodItem,
 } from '@/lib/food-contract';
+import {buildNutritionProfileMeta} from '@/lib/nutrition-profile';
 import {
   buildSecondaryReviewPrompt,
   SECONDARY_REVIEW_SYSTEM_PROMPT,
 } from '@/lib/secondary-review-prompt';
-import {sanitizeFallbackNutritionProfile} from '@/lib/validation';
+import {
+  sanitizeFallbackNutritionProfile,
+  validateMacroNutrients,
+} from '@/lib/validation';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
+const DEFAULT_PARSE_TIMEOUT_MS = 25_000;
 const MAX_ATTEMPTS = 2;
+const PARSE_MAX_ATTEMPTS = 1;
 const RETRY_DELAY_MS = 1_200;
 
 type UsageMetadata = {
@@ -39,12 +52,27 @@ function getDeepseekTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
+function getDeepseekParseTimeoutMs(): number {
+  const raw = process.env.DEEPSEEK_PARSE_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return DEFAULT_PARSE_TIMEOUT_MS;
+  }
+
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_PARSE_TIMEOUT_MS;
+}
+
 function getDeepseekModel(): string | null {
   const configured = process.env.DEEPSEEK_MODEL?.trim();
   return configured ? configured : null;
 }
 
-function createDeepseekClient(): OpenAI | null {
+function getDeepseekParseModel(): string {
+  const configured = process.env.DEEPSEEK_PARSE_MODEL?.trim();
+  return configured || getDeepseekModel() || 'deepseek-chat';
+}
+
+function createDeepseekClient(timeoutMs?: number): OpenAI | null {
   const apiKey = getDeepseekApiKey();
   if (!apiKey) {
     return null;
@@ -53,34 +81,12 @@ function createDeepseekClient(): OpenAI | null {
   return new OpenAI({
     apiKey,
     baseURL: getDeepseekBaseUrl(),
-    timeout: getDeepseekTimeoutMs(),
+    timeout: timeoutMs ?? getDeepseekTimeoutMs(),
   });
 }
 
 function extractJsonPayload(text: string): unknown {
-  const trimmed = text.trim();
-  if (!trimmed) {
-    throw new Error('DeepSeek returned an empty JSON payload.');
-  }
-
-  try {
-    return JSON.parse(trimmed);
-  } catch {}
-
-  const fencedMatch =
-    trimmed.match(/```json\s*([\s\S]*?)```/i) ??
-    trimmed.match(/```\s*([\s\S]*?)```/i);
-  if (fencedMatch?.[1]) {
-    return JSON.parse(fencedMatch[1].trim());
-  }
-
-  const arrayStart = trimmed.indexOf('[');
-  const arrayEnd = trimmed.lastIndexOf(']');
-  if (arrayStart >= 0 && arrayEnd > arrayStart) {
-    return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
-  }
-
-  throw new Error('Unable to extract JSON from DeepSeek response.');
+  return extractJsonPayloadShared(text, 'DeepSeek');
 }
 
 function normalizeDeepseekReviewPayload(payload: unknown): unknown {
@@ -124,9 +130,128 @@ function sanitizeReviewedItems(items: AiReviewedFoodItem[]): AiReviewedFoodItem[
   });
 }
 
+function sanitizeParsedItems(items: AiParsedFoodItem[]): AiParsedFoodItem[] {
+  return items.map((item) => {
+    const issues = validateMacroNutrients(item.fallbackPer100g, 0.12, item.foodName);
+    if (!issues.length) {
+      return {
+        ...item,
+        fallbackPer100gMeta: buildNutritionProfileMeta(item.fallbackPer100g, {
+          knownStatus: 'estimated',
+          knownSource: 'ai',
+          missingSource: 'ai',
+        }),
+        fallbackAdjusted: false,
+        fallbackValidationIssues: [],
+      };
+    }
+
+    const sanitized = sanitizeFallbackNutritionProfile(item.foodName, item.fallbackPer100g);
+    return {
+      ...item,
+      confidence: Math.min(item.confidence, 0.45),
+      fallbackPer100g: sanitized.profile,
+      fallbackPer100gMeta: buildNutritionProfileMeta(sanitized.profile, {
+        knownStatus: 'estimated',
+        knownSource: 'ai',
+        missingSource: 'ai',
+      }),
+      fallbackAdjusted: sanitized.adjusted,
+      fallbackValidationIssues: sanitized.remainingIssues,
+    };
+  });
+}
+
 export function getDeepseekReviewModel(): {provider: 'deepseek'; model: string} | null {
   const model = getDeepseekModel();
   return model ? {provider: 'deepseek', model} : null;
+}
+
+export function isDeepSeekConfigured(): boolean {
+  return Boolean(getDeepseekApiKey()) && Boolean(getDeepseekModel() || process.env.DEEPSEEK_PARSE_MODEL?.trim());
+}
+
+export async function parseFoodCandidatesWithDeepSeek(
+  description: string
+): Promise<AiParsedFoodItem[]> {
+  const client = createDeepseekClient(getDeepseekParseTimeoutMs());
+  if (!client) {
+    throw new Error('DEEPSEEK_API_KEY is not configured.');
+  }
+
+  const model = getDeepseekParseModel();
+  const prompt = `请拆解这句饮食描述，并输出约定的 JSON 数组：\n${description}`;
+  const startedAt = Date.now();
+  let lastError: unknown;
+  let lastUsage: UsageMetadata | undefined;
+
+  for (let attempt = 1; attempt <= PARSE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await client.chat.completions.create({
+        model,
+        temperature: 0,
+        max_tokens: 2048,
+        messages: [
+          {
+            role: 'system',
+            content: ESTIMATION_SYSTEM_PROMPT,
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      });
+
+      lastUsage = response.usage ?? lastUsage;
+      const text = response.choices[0]?.message?.content?.trim();
+      if (!text) {
+        throw new Error('DeepSeek returned an empty parse response.');
+      }
+
+      const jsonPayload = normalizeParsedItemsPayload(extractJsonPayload(text));
+      const parsed = AiParsedFoodItemsSchema.parse(jsonPayload);
+      const sanitized = sanitizeParsedItems(parsed);
+
+      await recordAiUsageTelemetry({
+        provider: 'deepseek',
+        model,
+        requestKind: 'parallel_estimate_deepseek',
+        inputPreview: prompt.slice(0, 220),
+        promptTokens: lastUsage?.prompt_tokens ?? null,
+        completionTokens: lastUsage?.completion_tokens ?? null,
+        totalTokens: lastUsage?.total_tokens ?? null,
+        durationMs: Date.now() - startedAt,
+        attemptCount: attempt,
+        success: true,
+      });
+      return sanitized;
+    } catch (error) {
+      lastError = error;
+      if (attempt === PARSE_MAX_ATTEMPTS) {
+        break;
+      }
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, RETRY_DELAY_MS * Math.max(1, 2 ** (attempt - 1)))
+      );
+    }
+  }
+
+  await recordAiUsageTelemetry({
+    provider: 'deepseek',
+    model,
+    requestKind: 'parallel_estimate_deepseek',
+    inputPreview: prompt.slice(0, 220),
+    promptTokens: lastUsage?.prompt_tokens ?? null,
+    completionTokens: lastUsage?.completion_tokens ?? null,
+    totalTokens: lastUsage?.total_tokens ?? null,
+    durationMs: Date.now() - startedAt,
+    attemptCount: PARSE_MAX_ATTEMPTS,
+    success: false,
+    errorMessage: lastError instanceof Error ? lastError.message : 'DeepSeek parse failed.',
+  });
+  throw lastError instanceof Error ? lastError : new Error('DeepSeek parse failed.');
 }
 
 export async function reviewResolvedFoodsWithDeepseek(

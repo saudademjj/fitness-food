@@ -306,12 +306,12 @@ PRIMARY_MODEL_ENABLE_SEARCH=true
 # DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 # PRIMARY_MODEL_ID=qwen3.5-plus
 
-# 可选：三模型复核里的 MiniMax 走 OpenRouter 的 MiniMax M2.7，并固定优先使用 MiniMax 提供商
-# SECONDARY_REVIEW_ENABLE_OPENROUTER_MINIMAX=true
-# OPENROUTER_MINIMAX_REVIEW_MODEL=minimax/minimax-m2.7
-# OPENROUTER_MINIMAX_REVIEW_PROVIDER_ORDER=minimax
-# OPENROUTER_MINIMAX_REVIEW_ALLOW_FALLBACKS=false
-# OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS=30000
+# 可选：三模型复核里的 MiniMax 改走官方兼容 OpenAI API
+# SECONDARY_REVIEW_ENABLE_MINIMAX=true
+# MINIMAX_API_KEY=your_minimax_api_key
+# MINIMAX_BASE_URL=https://api.minimax.io/v1
+# MINIMAX_REVIEW_MODEL=MiniMax-M2.7
+# MINIMAX_REVIEW_TIMEOUT_MS=30000
 # SECONDARY_REVIEW_ENABLE_DEEPSEEK=false
 # DEEPSEEK_REQUEST_TIMEOUT_MS=45000
 
@@ -361,11 +361,11 @@ npm run dev
 | `PRIMARY_MODEL_SEARCH_STRATEGY` | 否 | 联网搜索策略，默认 `turbo`；更深度的检索可改为 `max` |
 | `PRIMARY_MODEL_REQUEST_TIMEOUT_MS` | 否 | 主模型请求超时毫秒数；开启思考/联网时建议至少 `45000` |
 | `PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS` | 否 | 主模型 reviewer 自己的超时毫秒数；默认 `15000` |
-| `SECONDARY_REVIEW_ENABLE_OPENROUTER_MINIMAX` | 否 | 是否启用 OpenRouter MiniMax reviewer；默认使用 `minimax/minimax-m2.7` |
-| `OPENROUTER_MINIMAX_REVIEW_MODEL` | 否 | MiniMax reviewer 的 OpenRouter 模型 ID，默认 `minimax/minimax-m2.7` |
-| `OPENROUTER_MINIMAX_REVIEW_PROVIDER_ORDER` | 否 | reviewer 的 OpenRouter provider 顺序，默认 `minimax` |
-| `OPENROUTER_MINIMAX_REVIEW_ALLOW_FALLBACKS` | 否 | provider 不可用时是否允许回退到其他提供商，默认 `false` |
-| `OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS` | 否 | MiniMax reviewer 自己的超时毫秒数；建议按现网经验至少 `30000` |
+| `SECONDARY_REVIEW_ENABLE_MINIMAX` | 否 | 是否启用官方 MiniMax reviewer |
+| `MINIMAX_API_KEY` | 否 | MiniMax 官方 API 密钥 |
+| `MINIMAX_BASE_URL` | 否 | MiniMax 官方兼容 OpenAI API 基地址，默认 `https://api.minimax.io/v1` |
+| `MINIMAX_REVIEW_MODEL` | 否 | MiniMax reviewer 模型 ID，默认 `MiniMax-M2.7` |
+| `MINIMAX_REVIEW_TIMEOUT_MS` | 否 | MiniMax reviewer 自己的超时毫秒数；建议至少 `30000` |
 | `SECONDARY_REVIEW_ENABLE_DEEPSEEK` | 否 | 是否启用 DeepSeek reviewer，默认关闭 |
 | `DEEPSEEK_REQUEST_TIMEOUT_MS` | 否 | DeepSeek reviewer 自己的超时毫秒数；默认 `45000` |
 | `APP_BASE_URL` | 否 | 应用基础 URL，Magic Link 认证需要 |
@@ -375,7 +375,7 @@ npm run dev
 
 > 也可使用 `PGHOST`、`PGPORT`、`PGDATABASE` 等 `PG*` 环境变量替代 `DATABASE_URL`。
 >
-> 二次复核链路不再依赖外层统一的 `SECONDARY_REVIEW_TIMEOUT_MS`。当前实际生效的是各 provider 自己的超时：`PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS`、`OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS`、`DEEPSEEK_REQUEST_TIMEOUT_MS`。
+> 二次复核链路不再依赖外层统一的 `SECONDARY_REVIEW_TIMEOUT_MS`。当前实际生效的是各 provider 自己的超时：`PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS`、`MINIMAX_REVIEW_TIMEOUT_MS`、`DEEPSEEK_REQUEST_TIMEOUT_MS`。
 
 ---
 

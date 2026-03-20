@@ -1,4 +1,9 @@
 import {recordAiUsageTelemetry} from '@/lib/ai-usage-telemetry';
+import {
+  readBooleanEnv,
+  readPositiveIntegerEnv,
+  readStringEnv,
+} from '@/lib/env-utils';
 import {buildNutritionProfileMeta, createNutritionProfile} from '@/lib/nutrition-profile';
 import {
   AiCompositeDishBreakdownSchema,
@@ -305,17 +310,6 @@ function getPrimaryModelApiBaseUrl(): string {
   ).replace(/\/$/, '');
 }
 
-function readStringEnv(names: string | string[]): string | undefined {
-  for (const name of Array.isArray(names) ? names : [names]) {
-    const value = process.env[name]?.trim();
-    if (value) {
-      return value;
-    }
-  }
-
-  return undefined;
-}
-
 function getPrimaryModelId(): string {
   const configuredModel = readStringEnv([
     'OPENROUTER_MODEL',
@@ -359,41 +353,6 @@ function buildPrimaryModelHeaders(): Record<string, string> {
   }
 
   return headers;
-}
-
-function readBooleanEnv(names: string | string[], fallback: boolean): boolean {
-  for (const name of Array.isArray(names) ? names : [names]) {
-    const raw = process.env[name]?.trim().toLowerCase();
-    if (!raw) {
-      continue;
-    }
-
-    if (['1', 'true', 'yes', 'on'].includes(raw)) {
-      return true;
-    }
-
-    if (['0', 'false', 'no', 'off'].includes(raw)) {
-      return false;
-    }
-  }
-
-  return fallback;
-}
-
-function readPositiveIntegerEnv(names: string | string[]): number | undefined {
-  for (const name of Array.isArray(names) ? names : [names]) {
-    const raw = process.env[name]?.trim();
-    if (!raw) {
-      continue;
-    }
-
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-
-  return undefined;
 }
 
 function getPrimaryModelSearchStrategy(): 'turbo' | 'max' {

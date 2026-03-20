@@ -23,6 +23,12 @@ export type FoodLogEntry = ResolvedFoodItem & {
   draftBatchId?: string;
 };
 
+export type ViewerState = {
+  id: string;
+  email: string;
+  displayName: string | null;
+} | null;
+
 export type NutritionAggregate = {
   profile: NutritionProfile23;
   meta: NutritionProfileMeta23;

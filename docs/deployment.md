@@ -31,14 +31,14 @@ PRIMARY_MODEL_ID=qwen3.5-plus
 - `PRIMARY_MODEL_SEARCH_STRATEGY=turbo` 更适合当前饮食解析这种低延迟场景；如果你更看重检索深度，可以改成 `max`
 - `PRIMARY_MODEL_REQUEST_TIMEOUT_MS=45000` 给思考和联网请求预留更长超时时间，避免品牌食品场景下过早超时
 
-额外 reviewer 中，OpenRouter MiniMax 现在默认走 `minimax/minimax-m2.7`，并固定优先使用 MiniMax 提供商。如果你想显式控制，可以这样配：
+额外 reviewer 中，MiniMax 现在改走官方兼容 OpenAI API。如果你想显式控制，可以这样配：
 
 ```env
-SECONDARY_REVIEW_ENABLE_OPENROUTER_MINIMAX=true
-OPENROUTER_MINIMAX_REVIEW_MODEL=minimax/minimax-m2.7
-OPENROUTER_MINIMAX_REVIEW_PROVIDER_ORDER=minimax
-OPENROUTER_MINIMAX_REVIEW_ALLOW_FALLBACKS=false
-OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS=30000
+SECONDARY_REVIEW_ENABLE_MINIMAX=true
+MINIMAX_API_KEY=<your_minimax_key>
+MINIMAX_BASE_URL=https://api.minimax.io/v1
+MINIMAX_REVIEW_MODEL=MiniMax-M2.7
+MINIMAX_REVIEW_TIMEOUT_MS=30000
 SECONDARY_REVIEW_ENABLE_DEEPSEEK=false
 # 如果启用 DeepSeek reviewer，再单独配置它自己的超时：
 # DEEPSEEK_REQUEST_TIMEOUT_MS=45000
@@ -46,9 +46,9 @@ SECONDARY_REVIEW_ENABLE_DEEPSEEK=false
 
 说明：
 
-- 当前三类 reviewer 的实际超时分别由 `PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS`、`OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS`、`DEEPSEEK_REQUEST_TIMEOUT_MS` 控制。
+- 当前三类 reviewer 的实际超时分别由 `PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS`、`MINIMAX_REVIEW_TIMEOUT_MS`、`DEEPSEEK_REQUEST_TIMEOUT_MS` 控制。
 - `SECONDARY_REVIEW_TIMEOUT_MS / SECONDARY_REVIEW_PROVIDER_TIMEOUT_MS` 这类外层总超时不再用于当前 reviewer 链路，避免聚合层比 provider 更早把请求判成“未返回”。
-- 2026-03-20 的线上排查里，`minimax/minimax-m2.5:free` 在 OpenRouter 多次出现上游 429；现网已切到 `minimax/minimax-m2.7` 并固定 `provider=minimax`。
+- 2026-03-20 起 reviewer 改为 MiniMax 官方兼容 OpenAI API；官方文档当前示例模型名为 `MiniMax-M2.7`，基地址为 `https://api.minimax.io/v1`。
 
 ## 2. 本地开发连接 PostgreSQL
 

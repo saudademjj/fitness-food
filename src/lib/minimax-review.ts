@@ -3,6 +3,7 @@ import {
   AiReviewedFoodItemsSchema,
   type AiReviewedFoodItem,
 } from '@/lib/food-contract';
+import {readStringEnv} from '@/lib/env-utils';
 import {
   buildSecondaryReviewPrompt,
   SECONDARY_REVIEW_SYSTEM_PROMPT,
@@ -10,8 +11,7 @@ import {
 import {sanitizeFallbackNutritionProfile} from '@/lib/validation';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 25_000;
-const DEFAULT_MODEL_ID = 'minimax/minimax-m2.7';
-const DEFAULT_PROVIDER_ORDER = ['minimax'] as const;
+const DEFAULT_MODEL_ID = 'MiniMax-M2.7';
 const MAX_ATTEMPTS = 1;
 const RETRY_DELAY_MS = 1_200;
 
@@ -21,7 +21,7 @@ type UsageMetadata = {
   total_tokens?: number | null;
 };
 
-type OpenRouterChatCompletionResponse = {
+type MiniMaxChatCompletionResponse = {
   choices?: Array<{
     message?: {
       content?:
@@ -39,32 +39,21 @@ type OpenRouterChatCompletionResponse = {
   usage?: UsageMetadata;
 };
 
-function readStringEnv(names: string | string[]): string | undefined {
-  for (const name of Array.isArray(names) ? names : [names]) {
-    const value = process.env[name]?.trim();
-    if (value) {
-      return value;
-    }
-  }
-
-  return undefined;
+function getMiniMaxApiKey(): string | null {
+  return process.env.MINIMAX_API_KEY?.trim() || null;
 }
 
-function getOpenRouterApiKey(): string | null {
-  return process.env.OPENROUTER_API_KEY?.trim() || null;
-}
-
-function getOpenRouterBaseUrl(): string {
-  return (process.env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1').replace(
+function getMiniMaxBaseUrl(): string {
+  return (process.env.MINIMAX_BASE_URL ?? 'https://api.minimax.io/v1').replace(
     /\/$/,
     ''
   );
 }
 
-function getOpenRouterTimeoutMs(): number {
+function getMiniMaxTimeoutMs(): number {
   const raw = readStringEnv([
-    'OPENROUTER_MINIMAX_REVIEW_TIMEOUT_MS',
-    'OPENROUTER_REVIEW_TIMEOUT_MS',
+    'MINIMAX_REVIEW_TIMEOUT_MS',
+    'MINIMAX_REQUEST_TIMEOUT_MS',
     'PRIMARY_MODEL_REVIEW_REQUEST_TIMEOUT_MS',
   ]);
   if (!raw) {
@@ -75,69 +64,29 @@ function getOpenRouterTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
-function getOpenRouterMinimaxModel(): string {
+function getMiniMaxReviewModel(): string {
   return (
     readStringEnv([
-      'OPENROUTER_MINIMAX_REVIEW_MODEL',
-      'OPENROUTER_MINIMAX_MODEL',
+      'MINIMAX_REVIEW_MODEL',
+      'MINIMAX_MODEL',
       'SECONDARY_REVIEW_MINIMAX_MODEL',
     ]) ?? DEFAULT_MODEL_ID
   );
 }
 
-function getOpenRouterMinimaxProviderOrder(): string[] {
-  const configured = readStringEnv([
-    'OPENROUTER_MINIMAX_REVIEW_PROVIDER_ORDER',
-    'OPENROUTER_MINIMAX_PROVIDER_ORDER',
-  ]);
-
-  if (!configured) {
-    return [...DEFAULT_PROVIDER_ORDER];
-  }
-
-  return configured
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function getOpenRouterMinimaxAllowFallbacks(): boolean {
-  const raw = readStringEnv([
-    'OPENROUTER_MINIMAX_REVIEW_ALLOW_FALLBACKS',
-    'OPENROUTER_MINIMAX_ALLOW_FALLBACKS',
-  ])?.toLowerCase();
-
-  if (!raw) {
-    return false;
-  }
-
-  return ['1', 'true', 'yes', 'on'].includes(raw);
-}
-
-function buildOpenRouterHeaders(): Record<string, string> {
-  const apiKey = getOpenRouterApiKey();
+function buildMiniMaxHeaders(): Record<string, string> {
+  const apiKey = getMiniMaxApiKey();
   if (!apiKey) {
-    throw new Error('OPENROUTER_API_KEY is not configured.');
+    throw new Error('MINIMAX_API_KEY is not configured.');
   }
 
-  const headers: Record<string, string> = {
+  return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`,
   };
-
-  const httpReferer =
-    process.env.OPENROUTER_HTTP_REFERER?.trim() || process.env.APP_BASE_URL?.trim();
-  const appName = process.env.OPENROUTER_APP_NAME?.trim() || 'fitness-food';
-
-  if (httpReferer) {
-    headers['HTTP-Referer'] = httpReferer;
-  }
-  headers['X-Title'] = appName;
-
-  return headers;
 }
 
-function extractTextContent(payload: OpenRouterChatCompletionResponse): string {
+function extractTextContent(payload: MiniMaxChatCompletionResponse): string {
   const content = payload.choices?.[0]?.message?.content;
   if (typeof content === 'string') {
     return content.trim();
@@ -150,24 +99,17 @@ function extractTextContent(payload: OpenRouterChatCompletionResponse): string {
       .trim();
   }
 
-  throw new Error('OpenRouter returned an empty review response.');
+  throw new Error('MiniMax returned an empty review response.');
 }
 
-function normalizeOpenRouterErrorMessage(status: number, errorText: string): string {
-  if (
-    status === 404 &&
-    errorText.includes('No endpoints available matching your guardrail restrictions and data policy')
-  ) {
-    return 'OpenRouter MiniMax reviewer is blocked by your privacy settings or provider policy. Check the model route and privacy settings in https://openrouter.ai/settings/privacy .';
-  }
-
-  return `OpenRouter MiniMax request failed with ${status}: ${errorText.slice(0, 240)}`;
+function normalizeMiniMaxErrorMessage(status: number, errorText: string): string {
+  return `MiniMax request failed with ${status}: ${errorText.slice(0, 240)}`;
 }
 
 function extractJsonPayload(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error('OpenRouter returned an empty JSON payload.');
+    throw new Error('MiniMax returned an empty JSON payload.');
   }
 
   try {
@@ -187,7 +129,7 @@ function extractJsonPayload(text: string): unknown {
     return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
   }
 
-  throw new Error('Unable to extract JSON from OpenRouter response.');
+  throw new Error('Unable to extract JSON from MiniMax response.');
 }
 
 function normalizeReviewedItemsPayload(payload: unknown): unknown {
@@ -231,30 +173,30 @@ function sanitizeReviewedItems(items: AiReviewedFoodItem[]): AiReviewedFoodItem[
   });
 }
 
-export function getOpenRouterMinimaxReviewModel(): {
+export function getMiniMaxReviewerModel(): {
   provider: 'minimax';
   model: string;
 } | null {
-  if (!getOpenRouterApiKey()) {
+  if (!getMiniMaxApiKey()) {
     return null;
   }
 
   return {
     provider: 'minimax',
-    model: getOpenRouterMinimaxModel(),
+    model: getMiniMaxReviewModel(),
   };
 }
 
-export async function reviewResolvedFoodsWithOpenRouterMinimax(
+export async function reviewResolvedFoodsWithMiniMax(
   sourceDescription: string,
   foods: Parameters<typeof buildSecondaryReviewPrompt>[1],
   weightLocks: boolean[]
 ): Promise<AiReviewedFoodItem[]> {
-  if (!getOpenRouterApiKey()) {
-    throw new Error('OPENROUTER_API_KEY is not configured.');
+  if (!getMiniMaxApiKey()) {
+    throw new Error('MINIMAX_API_KEY is not configured.');
   }
 
-  const model = getOpenRouterMinimaxModel();
+  const model = getMiniMaxReviewModel();
   const prompt = buildSecondaryReviewPrompt(sourceDescription, foods, weightLocks);
   const startedAt = Date.now();
   let lastError: unknown;
@@ -262,18 +204,14 @@ export async function reviewResolvedFoodsWithOpenRouterMinimax(
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), getOpenRouterTimeoutMs());
+    const timeout = setTimeout(() => controller.abort(), getMiniMaxTimeoutMs());
 
     try {
-      const response = await fetch(`${getOpenRouterBaseUrl()}/chat/completions`, {
+      const response = await fetch(`${getMiniMaxBaseUrl()}/chat/completions`, {
         method: 'POST',
-        headers: buildOpenRouterHeaders(),
+        headers: buildMiniMaxHeaders(),
         body: JSON.stringify({
           model,
-          provider: {
-            order: getOpenRouterMinimaxProviderOrder(),
-            allow_fallbacks: getOpenRouterMinimaxAllowFallbacks(),
-          },
           temperature: 0,
           max_tokens: 2048,
           messages: [
@@ -293,10 +231,10 @@ export async function reviewResolvedFoodsWithOpenRouterMinimax(
 
       if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(normalizeOpenRouterErrorMessage(response.status, errorText));
+        throw new Error(normalizeMiniMaxErrorMessage(response.status, errorText));
       }
 
-      const payload = (await response.json()) as OpenRouterChatCompletionResponse;
+      const payload = (await response.json()) as MiniMaxChatCompletionResponse;
       lastUsage = payload.usage ?? lastUsage;
       if (payload.error?.message) {
         throw new Error(payload.error.message);
@@ -336,10 +274,10 @@ export async function reviewResolvedFoodsWithOpenRouterMinimax(
 
   const errorMessage =
     lastError instanceof Error && lastError.name === 'AbortError'
-      ? 'OpenRouter MiniMax request timed out.'
+      ? 'MiniMax request timed out.'
       : lastError instanceof Error
         ? lastError.message
-        : 'OpenRouter MiniMax review failed.';
+        : 'MiniMax review failed.';
 
   await recordAiUsageTelemetry({
     provider: 'minimax',
@@ -356,8 +294,8 @@ export async function reviewResolvedFoodsWithOpenRouterMinimax(
   });
 
   if (lastError instanceof Error && lastError.name === 'AbortError') {
-    throw new Error('OpenRouter MiniMax request timed out.');
+    throw new Error('MiniMax request timed out.');
   }
 
-  throw lastError instanceof Error ? lastError : new Error('OpenRouter MiniMax review failed.');
+  throw lastError instanceof Error ? lastError : new Error('MiniMax review failed.');
 }

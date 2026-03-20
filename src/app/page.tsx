@@ -1,36 +1,7 @@
 'use client';
 
-import React, {useEffect, useState} from 'react';
-import {DashboardSummary} from '@/components/macro-calculator/dashboard-summary';
-import {FoodInputForm} from '@/components/macro-calculator/food-input-form';
-import {FoodLogList} from '@/components/macro-calculator/food-log-list';
-import {ConfirmationDialog} from '@/components/macro-calculator/confirmation-dialog';
-import {
-  GOAL_FIELD_GROUPS,
-  coerceFoodLogEntryArray,
-  coerceMacroGoals,
-  createEntryId,
-  DEFAULT_GOALS,
-  ENTRY_STORAGE_KEY,
-  GOAL_STORAGE_KEY,
-  MIGRATION_STORAGE_KEY,
-  sumEntryTotals,
-  type FoodLogEntry,
-  type MacroGoals,
-} from '@/components/macro-calculator/types';
-import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
-import {Salad, Settings2, LogIn, Download, History, Cloud} from 'lucide-react';
-import {Toaster} from '@/components/ui/toaster';
-import {Button} from '@/components/ui/button';
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover';
-import {Input} from '@/components/ui/input';
-import {Label} from '@/components/ui/label';
-import {ScrollArea} from '@/components/ui/scroll-area';
-import {useToast} from '@/hooks/use-toast';
+import {useEffect, useState} from 'react';
+
 import {
   getViewerAction,
   logoutAction,
@@ -45,6 +16,29 @@ import {
   saveParsedFoodsAction,
   updateFoodLogItemAction,
 } from '@/app/actions/logs';
+import {ConfirmationDialog} from '@/components/macro-calculator/confirmation-dialog';
+import {DashboardSummary} from '@/components/macro-calculator/dashboard-summary';
+import {FoodHistoryToolbar} from '@/components/macro-calculator/food-history-toolbar';
+import {FoodInputForm} from '@/components/macro-calculator/food-input-form';
+import {FoodLogList} from '@/components/macro-calculator/food-log-list';
+import {FoodLogListSkeleton} from '@/components/macro-calculator/food-log-list-skeleton';
+import {MacroHelperHeader} from '@/components/macro-calculator/macro-helper-header';
+import {
+  DEFAULT_GOALS,
+  ENTRY_STORAGE_KEY,
+  GOAL_STORAGE_KEY,
+  MIGRATION_STORAGE_KEY,
+  coerceFoodLogEntryArray,
+  coerceMacroGoals,
+  createEntryId,
+  sumEntryTotals,
+  type FoodLogEntry,
+  type MacroGoals,
+  type ViewerState,
+} from '@/components/macro-calculator/types';
+import {Toaster} from '@/components/ui/toaster';
+import {useToast} from '@/hooks/use-toast';
+import type {ParseFoodDescriptionOutput} from '@/lib/food-contract';
 import {
   buildTimestampForDateKey,
   formatLocalDateKey,
@@ -53,11 +47,60 @@ import {
 
 const TODAY = formatLocalDateKey(new Date());
 
-type ViewerState = {
-  id: string;
-  email: string;
-  displayName: string | null;
-} | null;
+type ConfirmationStage = 'editing' | 'reviewed';
+
+function getEntryDateKey(entry: Pick<FoodLogEntry, 'loggedOn' | 'timestamp'>): string {
+  return entry.loggedOn ?? getDateKeyFromTimestamp(entry.timestamp);
+}
+
+function buildEditableParseResult(entry: FoodLogEntry): ParseFoodDescriptionOutput {
+  const item = {
+    foodName: entry.foodName,
+    quantityDescription: entry.quantityDescription,
+    estimatedGrams: entry.estimatedGrams,
+    confidence: entry.confidence,
+    sourceKind: entry.sourceKind,
+    sourceLabel: entry.sourceLabel,
+    matchMode: entry.matchMode,
+    sourceStatus: entry.sourceStatus,
+    amountBasisG: entry.amountBasisG,
+    validationFlags: entry.validationFlags,
+    reviewMeta: entry.reviewMeta ?? null,
+    per100g: entry.per100g,
+    per100gMeta: entry.per100gMeta,
+    totals: entry.totals,
+    totalsMeta: entry.totalsMeta,
+  };
+
+  return {
+    compositeDishName: null,
+    totalNutrition: entry.totals,
+    totalNutritionMeta: entry.totalsMeta,
+    totalWeight: entry.estimatedGrams,
+    overallConfidence: entry.confidence,
+    items: [item],
+    secondaryReviewSummary: null,
+    segments: [
+      {
+        sourceDescription: entry.foodName,
+        compositeDishName: null,
+        resolutionKind: 'direct_items',
+        totalNutrition: entry.totals,
+        totalNutritionMeta: entry.totalsMeta,
+        totalWeight: entry.estimatedGrams,
+        overallConfidence: entry.confidence,
+        items: [item],
+        ingredientBreakdown: [],
+      },
+    ],
+  };
+}
+
+function buildPendingDescription(entry: FoodLogEntry): string {
+  return entry.quantityDescription && entry.quantityDescription !== '未知'
+    ? `${entry.quantityDescription}${entry.foodName}`
+    : entry.foodName;
+}
 
 export default function MacroHelperPage() {
   const [localEntries, setLocalEntries] = useState<FoodLogEntry[]>([]);
@@ -73,17 +116,50 @@ export default function MacroHelperPage() {
   const [isLoadingEntries, setIsLoadingEntries] = useState(false);
   const [isConfirming, setIsConfirming] = useState(false);
   const [editingEntry, setEditingEntry] = useState<FoodLogEntry | null>(null);
-  const [confirmationStage, setConfirmationStage] = useState<'editing' | 'reviewed'>('reviewed');
+  const [confirmationStage, setConfirmationStage] =
+    useState<ConfirmationStage>('reviewed');
+  const [hasLoadedLocalState, setHasLoadedLocalState] = useState(false);
   const {toast} = useToast();
-  const getEntryDateKey = (entry: Pick<FoodLogEntry, 'loggedOn' | 'timestamp'>) =>
-    entry.loggedOn ?? getDateKeyFromTimestamp(entry.timestamp);
 
   const displayEntries = viewer
     ? serverEntries
-    : localEntries.filter(
-        (entry) => getEntryDateKey(entry) === selectedDate
-      );
+    : localEntries.filter((entry) => getEntryDateKey(entry) === selectedDate);
+  const sortedDisplayEntries = [...displayEntries].sort(
+    (left, right) => right.timestamp - left.timestamp
+  );
   const totals = sumEntryTotals(displayEntries);
+
+  const refreshViewer = async () => {
+    const result = await getViewerAction();
+    setViewer(result.viewer);
+    setAuthConfigured(result.authConfigured);
+  };
+
+  const loadServerEntries = async (date: string) => {
+    setIsLoadingEntries(true);
+    try {
+      const entries = await listFoodLogEntriesAction(date);
+      setServerEntries(entries);
+    } catch (error) {
+      const description =
+        error instanceof Error ? error.message : '读取历史记录失败，请稍后再试。';
+      toast({
+        title: '加载历史失败',
+        description,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoadingEntries(false);
+    }
+  };
+
+  const resetConfirmationState = () => {
+    setIsConfirmOpen(false);
+    setParsedResult(null);
+    setPendingDescription('');
+    setEditingEntry(null);
+    setConfirmationStage('reviewed');
+  };
 
   useEffect(() => {
     const savedEntries = localStorage.getItem(ENTRY_STORAGE_KEY);
@@ -113,26 +189,25 @@ export default function MacroHelperPage() {
       }
     }
 
-    const loadViewer = async () => {
-      try {
-        const result = await getViewerAction();
-        setViewer(result.viewer);
-        setAuthConfigured(result.authConfigured);
-      } catch (error) {
-        console.error('Failed to load viewer', error);
-      }
-    };
-
-    void loadViewer();
+    setHasLoadedLocalState(true);
+    void refreshViewer();
   }, []);
 
   useEffect(() => {
+    if (!hasLoadedLocalState) {
+      return;
+    }
+
     localStorage.setItem(ENTRY_STORAGE_KEY, JSON.stringify(localEntries));
-  }, [localEntries]);
+  }, [hasLoadedLocalState, localEntries]);
 
   useEffect(() => {
+    if (!hasLoadedLocalState) {
+      return;
+    }
+
     localStorage.setItem(GOAL_STORAGE_KEY, JSON.stringify(goals));
-  }, [goals]);
+  }, [goals, hasLoadedLocalState]);
 
   useEffect(() => {
     const authState = new URLSearchParams(window.location.search).get('auth');
@@ -143,7 +218,10 @@ export default function MacroHelperPage() {
       });
       window.history.replaceState({}, '', '/');
       void refreshViewer();
-    } else if (authState === 'invalid') {
+      return;
+    }
+
+    if (authState === 'invalid') {
       toast({
         title: '登录链接无效',
         description: '链接已过期或已被使用，请重新获取。',
@@ -159,15 +237,14 @@ export default function MacroHelperPage() {
     }
 
     void loadServerEntries(selectedDate);
-  }, [viewer, selectedDate]);
+  }, [selectedDate, viewer]);
 
   useEffect(() => {
-    if (!viewer || !localEntries.length) {
+    if (!viewer || !localEntries.length || !hasLoadedLocalState) {
       return;
     }
 
-    const alreadyMigrated = localStorage.getItem(MIGRATION_STORAGE_KEY) === '1';
-    if (alreadyMigrated) {
+    if (localStorage.getItem(MIGRATION_STORAGE_KEY) === '1') {
       return;
     }
 
@@ -187,31 +264,7 @@ export default function MacroHelperPage() {
     };
 
     void migrateDrafts();
-  }, [viewer, localEntries, selectedDate, toast]);
-
-  const refreshViewer = async () => {
-    const result = await getViewerAction();
-    setViewer(result.viewer);
-    setAuthConfigured(result.authConfigured);
-  };
-
-  const loadServerEntries = async (date: string) => {
-    setIsLoadingEntries(true);
-    try {
-      const entries = await listFoodLogEntriesAction(date);
-      setServerEntries(entries);
-    } catch (error) {
-      const description =
-        error instanceof Error ? error.message : '读取历史记录失败，请稍后再试。';
-      toast({
-        title: '加载历史失败',
-        description,
-        variant: 'destructive',
-      });
-    } finally {
-      setIsLoadingEntries(false);
-    }
-  };
+  }, [hasLoadedLocalState, localEntries, selectedDate, toast, viewer]);
 
   const handleFoodsParsed = (payload: {
     result: ParseFoodDescriptionOutput;
@@ -231,6 +284,11 @@ export default function MacroHelperPage() {
     foods: ParseFoodDescriptionOutput['items'];
     requiresReconciliation: boolean;
   }) => {
+    const firstFood = foods[0];
+    if (!firstFood) {
+      return;
+    }
+
     setIsConfirming(true);
     try {
       if (requiresReconciliation) {
@@ -264,7 +322,7 @@ export default function MacroHelperPage() {
       }
 
       if (editingEntry) {
-        const updated = await updateFoodLogItemAction(editingEntry.id, foods[0]!);
+        const updated = await updateFoodLogItemAction(editingEntry.id, firstFood);
         if (viewer) {
           setServerEntries((current) =>
             current.map((entry) => (entry.id === editingEntry.id ? updated : entry))
@@ -275,7 +333,7 @@ export default function MacroHelperPage() {
               entry.id === editingEntry.id
                 ? {
                     ...entry,
-                    ...foods[0],
+                    ...firstFood,
                   }
                 : entry
             )
@@ -293,7 +351,9 @@ export default function MacroHelperPage() {
           eatenAt,
           selectedDate
         );
-        setServerEntries((current) => [...created, ...current].sort((a, b) => b.timestamp - a.timestamp));
+        setServerEntries((current) =>
+          [...created, ...current].sort((left, right) => right.timestamp - left.timestamp)
+        );
         toast({
           title: '已同步到云端',
           description: '这次记录已经保存到你的账号历史中。',
@@ -308,18 +368,14 @@ export default function MacroHelperPage() {
           loggedOn: selectedDate,
           draftBatchId,
         }));
-        setLocalEntries((prev) => [...newEntries, ...prev]);
+        setLocalEntries((current) => [...newEntries, ...current]);
         toast({
           title: '已保存到本地草稿',
           description: '登录后会自动迁移到云端历史。',
         });
       }
 
-      setIsConfirmOpen(false);
-      setParsedResult(null);
-      setPendingDescription('');
-      setEditingEntry(null);
-      setConfirmationStage('reviewed');
+      resetConfirmationState();
     } catch (error) {
       const description =
         error instanceof Error ? error.message : '保存食物记录失败，请稍后再试。';
@@ -338,9 +394,10 @@ export default function MacroHelperPage() {
       if (viewer) {
         await deleteFoodLogItemAction(id);
         setServerEntries((current) => current.filter((entry) => entry.id !== id));
-      } else {
-        setLocalEntries((current) => current.filter((entry) => entry.id !== id));
+        return;
       }
+
+      setLocalEntries((current) => current.filter((entry) => entry.id !== id));
     } catch (error) {
       const description =
         error instanceof Error ? error.message : '删除失败，请稍后再试。';
@@ -354,57 +411,15 @@ export default function MacroHelperPage() {
 
   const handleEditEntry = (entry: FoodLogEntry) => {
     setEditingEntry(entry);
-    const item = {
-      foodName: entry.foodName,
-      quantityDescription: entry.quantityDescription,
-      estimatedGrams: entry.estimatedGrams,
-      confidence: entry.confidence,
-      sourceKind: entry.sourceKind,
-      sourceLabel: entry.sourceLabel,
-      matchMode: entry.matchMode,
-      sourceStatus: entry.sourceStatus,
-      amountBasisG: entry.amountBasisG,
-      validationFlags: entry.validationFlags,
-      reviewMeta: entry.reviewMeta ?? null,
-      per100g: entry.per100g,
-      per100gMeta: entry.per100gMeta,
-      totals: entry.totals,
-      totalsMeta: entry.totalsMeta,
-    };
-    setParsedResult({
-      compositeDishName: null,
-      totalNutrition: entry.totals,
-      totalNutritionMeta: entry.totalsMeta,
-      totalWeight: entry.estimatedGrams,
-      overallConfidence: entry.confidence,
-      items: [item],
-      secondaryReviewSummary: null,
-      segments: [
-        {
-          sourceDescription: entry.foodName,
-          compositeDishName: null,
-          resolutionKind: 'direct_items',
-          totalNutrition: entry.totals,
-          totalNutritionMeta: entry.totalsMeta,
-          totalWeight: entry.estimatedGrams,
-          overallConfidence: entry.confidence,
-          items: [item],
-          ingredientBreakdown: [],
-        },
-      ],
-    });
-    setPendingDescription(
-      entry.quantityDescription && entry.quantityDescription !== '未知'
-        ? `${entry.quantityDescription}${entry.foodName}`
-        : entry.foodName
-    );
+    setParsedResult(buildEditableParseResult(entry));
+    setPendingDescription(buildPendingDescription(entry));
     setConfirmationStage('reviewed');
     setIsConfirmOpen(true);
   };
 
   const updateGoal = (key: keyof MacroGoals, value: string) => {
-    const nextValue = parseFloat(value) || 0;
-    setGoals((prev) => ({...prev, [key]: nextValue}));
+    const nextValue = Number.parseFloat(value) || 0;
+    setGoals((current) => ({...current, [key]: nextValue}));
   };
 
   const handleRequestMagicLink = async () => {
@@ -457,130 +472,46 @@ export default function MacroHelperPage() {
     }
   };
 
+  const confirmationDialogDescription =
+    confirmationStage === 'editing'
+      ? '你已经修改了名称或克重。系统会先调用主模型、MiniMax 和 DeepSeek 共同复核，再把最终结果回显给你。'
+      : editingEntry
+        ? '这是当前可保存的复核结果；如继续修改名称或克重，会再次进入三模型复核。'
+        : parsedResult?.secondaryReviewSummary?.attempted
+          ? '这是当前可保存的复核结果。直接确认即可保存，继续修改名称或克重会再次进入三模型复核。'
+          : '这是首轮识别结果。直接确认即可保存；如继续修改名称或克重，系统会先调用三模型复核再回显。';
+
+  const confirmLabel =
+    confirmationStage === 'editing'
+      ? editingEntry
+        ? '先复核修改'
+        : '先复核结果'
+      : editingEntry
+        ? '保存修改'
+        : viewer
+          ? '确认并同步'
+          : '确认并存为草稿';
+
+  const historyTitle = selectedDate === TODAY ? '今日记录' : `${selectedDate} 记录`;
+  const historyEmptyTitle = viewer
+    ? '这个日期还没有任何历史记录'
+    : '这个日期还没有本地草稿';
+  const historyEmptyDescription = viewer
+    ? '换一个日期看看，或继续录入新的饮食描述。'
+    : '未登录时记录会保存在浏览器里，也支持按日期筛选；登录后会自动迁移到云端。';
+
   return (
     <div className="min-h-screen bg-background pb-20">
-      <header className="sticky top-0 z-10 mb-6 w-full border-b border-border/40 bg-background/80 px-6 py-4 backdrop-blur-lg">
-        <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="rounded-xl bg-gradient-to-br from-primary to-primary/80 p-2 shadow-md">
-              <Salad className="h-6 w-6 text-primary-foreground" />
-            </div>
-            <div>
-              <h1 className="font-headline text-2xl font-black tracking-tight text-primary">
-                营养助手 Pro
-              </h1>
-              <p className="text-xs text-muted-foreground">
-                {viewer
-                  ? `已登录 ${viewer.email} · 历史记录按日期同步`
-                  : '未登录时保存为本地草稿，也支持按日期筛选；登录后会自动迁移到云端'}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" className="rounded-full">
-                  <LogIn className="mr-2 h-4 w-4" />
-                  {viewer ? '账号' : '登录同步'}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-80 space-y-3">
-                {viewer ? (
-                  <>
-                    <div>
-                      <div className="font-semibold text-primary">{viewer.email}</div>
-                      <div className="text-xs text-muted-foreground">
-                        登录后可编辑历史、跨设备同步和导出。
-                      </div>
-                    </div>
-                    <Button variant="outline" onClick={handleLogout} className="w-full rounded-full">
-                      退出登录
-                    </Button>
-                  </>
-                ) : (
-                  <>
-                    <div className="space-y-1">
-                      <div className="font-semibold text-primary">邮箱魔法链接登录</div>
-                      <div className="text-xs text-muted-foreground">
-                        输入邮箱后，我们会发送一个一次性登录链接。
-                      </div>
-                    </div>
-                    <Input
-                      type="email"
-                      placeholder="you@example.com"
-                      value={loginEmail}
-                      onChange={(e) => setLoginEmail(e.target.value)}
-                    />
-                    <Button
-                      onClick={handleRequestMagicLink}
-                      className="w-full rounded-full"
-                      disabled={!authConfigured || !loginEmail.trim()}
-                    >
-                      发送登录链接
-                    </Button>
-                    {!authConfigured ? (
-                      <p className="text-xs text-amber-600">
-                        服务器尚未配置 SMTP，暂时只能使用本地草稿。
-                      </p>
-                    ) : null}
-                  </>
-                )}
-              </PopoverContent>
-            </Popover>
-
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="rounded-full text-primary hover:bg-secondary"
-                >
-                  <Settings2 className="h-5 w-5" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-80 p-0">
-                <ScrollArea className="h-[420px] p-4">
-                  <div className="grid gap-4">
-                    <div className="space-y-2">
-                      <h4 className="font-medium leading-none">目标设定</h4>
-                      <p className="text-xs text-muted-foreground">
-                        配置每日 23 项营养目标，钠和添加糖按上限展示。
-                      </p>
-                    </div>
-                    {GOAL_FIELD_GROUPS.map((group) => (
-                      <div key={group.id} className="space-y-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                          {group.label}
-                        </div>
-                        <div className="grid gap-3">
-                          {group.fields.map((field) => (
-                            <div key={field.key} className="grid grid-cols-3 items-center gap-4">
-                              <Label htmlFor={`goal-${field.key}`} className="text-[10px]">
-                                {field.label}
-                              </Label>
-                              <Input
-                                id={`goal-${field.key}`}
-                                type="number"
-                                step="0.1"
-                                value={goals[field.key]}
-                                onChange={(e) =>
-                                  updateGoal(field.key, e.target.value)
-                                }
-                                className="col-span-2 h-8 text-xs"
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </PopoverContent>
-            </Popover>
-          </div>
-        </div>
-      </header>
+      <MacroHelperHeader
+        authConfigured={authConfigured}
+        goals={goals}
+        loginEmail={loginEmail}
+        onGoalChange={updateGoal}
+        onLoginEmailChange={setLoginEmail}
+        onLogout={handleLogout}
+        onRequestMagicLink={handleRequestMagicLink}
+        viewer={viewer}
+      />
 
       <main className="mx-auto max-w-4xl px-4 pt-2 sm:px-6">
         <DashboardSummary totals={totals.profile} totalsMeta={totals.meta} goals={goals} />
@@ -588,72 +519,23 @@ export default function MacroHelperPage() {
         <div className="mx-auto max-w-3xl">
           <FoodInputForm onFoodsParsed={handleFoodsParsed} />
 
-          <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-border/40 bg-card/60 dark:bg-card/30 px-4 py-3 shadow-sm sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <History className="h-4 w-4" />
-              <span>{viewer ? '云端历史' : '本地草稿'}</span>
-              {viewer ? (
-                <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-primary">
-                  <Cloud className="h-3 w-3" />
-                  跨设备同步
-                </span>
-              ) : null}
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Input
-                type="date"
-                value={selectedDate}
-                onChange={(e) => setSelectedDate(e.target.value)}
-                className="w-[160px] bg-card dark:bg-card/60"
-              />
-              <Button
-                variant="outline"
-                className="rounded-full"
-                onClick={() => handleExport('csv')}
-                disabled={!viewer}
-              >
-                <Download className="mr-2 h-4 w-4" />
-                导出 CSV
-              </Button>
-              <Button
-                variant="outline"
-                className="rounded-full"
-                onClick={() => handleExport('json')}
-                disabled={!viewer}
-              >
-                <Download className="mr-2 h-4 w-4" />
-                导出 JSON
-              </Button>
-            </div>
-          </div>
+          <FoodHistoryToolbar
+            onExport={handleExport}
+            onSelectedDateChange={setSelectedDate}
+            selectedDate={selectedDate}
+            viewer={viewer}
+          />
 
           {isLoadingEntries ? (
-            <div className="space-y-4">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="rounded-2xl bg-card/60 p-5">
-                  <div className="h-5 w-1/3 rounded-lg animate-shimmer" />
-                  <div className="mt-3 h-3 w-2/3 rounded-lg animate-shimmer" />
-                  <div className="mt-2 h-3 w-1/2 rounded-lg animate-shimmer" />
-                  <div className="mt-4 grid grid-cols-4 gap-3">
-                    {[1, 2, 3, 4].map((j) => (
-                      <div key={j} className="h-8 rounded-lg animate-shimmer" />
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
+            <FoodLogListSkeleton />
           ) : (
             <FoodLogList
-              entries={displayEntries.slice().sort((a, b) => b.timestamp - a.timestamp)}
+              entries={sortedDisplayEntries}
               onDelete={handleDeleteEntry}
               onEdit={handleEditEntry}
-              listTitle={selectedDate === TODAY ? '今日记录' : `${selectedDate} 记录`}
-              emptyTitle={viewer ? '这个日期还没有任何历史记录' : '这个日期还没有本地草稿'}
-              emptyDescription={
-                viewer
-                  ? '换一个日期看看，或继续录入新的饮食描述。'
-                  : '未登录时记录会保存在浏览器里，也支持按日期筛选；登录后会自动迁移到云端。'
-              }
+              listTitle={historyTitle}
+              emptyTitle={historyEmptyTitle}
+              emptyDescription={historyEmptyDescription}
             />
           )}
         </div>
@@ -666,36 +548,15 @@ export default function MacroHelperPage() {
             if (isConfirming) {
               return;
             }
-            setIsConfirmOpen(false);
-            setEditingEntry(null);
-            setParsedResult(null);
-            setConfirmationStage('reviewed');
+            resetConfirmationState();
           }}
           parsedResult={parsedResult}
           onConfirm={handleConfirmFoods}
           isSubmitting={isConfirming}
           onReviewStateChange={setConfirmationStage}
           dialogTitle={editingEntry ? '编辑历史记录' : '确认食物与重量'}
-          dialogDescription={
-            confirmationStage === 'editing'
-              ? '你已经修改了名称或克重。系统会先调用主模型、MiniMax 和 DeepSeek 共同复核，再把最终结果回显给你。'
-              : editingEntry
-                ? '这是当前可保存的复核结果；如继续修改名称或克重，会再次进入三模型复核。'
-                : parsedResult.secondaryReviewSummary?.attempted
-                  ? '这是当前可保存的复核结果。直接确认即可保存，继续修改名称或克重会再次进入三模型复核。'
-                  : '这是首轮识别结果。直接确认即可保存；如继续修改名称或克重，系统会先调用三模型复核再回显。'
-          }
-          confirmLabel={
-            confirmationStage === 'editing'
-              ? editingEntry
-                ? '先复核修改'
-                : '先复核结果'
-              : editingEntry
-                ? '保存修改'
-                : viewer
-                  ? '确认并同步'
-                  : '确认并存为草稿'
-          }
+          dialogDescription={confirmationDialogDescription}
+          confirmLabel={confirmLabel}
         />
       ) : null}
 

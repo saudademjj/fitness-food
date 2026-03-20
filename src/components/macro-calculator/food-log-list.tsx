@@ -1,11 +1,25 @@
 'use client';
 
 import React, {useState} from 'react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import {Pencil, Trash2, Scale, Zap, Wheat, Flame, Droplets, AlertTriangle, ChevronDown, ChevronUp, UtensilsCrossed} from 'lucide-react';
-import { type FoodLogEntry } from './types';
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Droplets,
+  Flame,
+  Pencil,
+  Scale,
+  Trash2,
+  UtensilsCrossed,
+  Wheat,
+  Zap,
+} from 'lucide-react';
+
+import {NutritionDetailGrid} from '@/components/macro-calculator/nutrition-detail-grid';
+import type {FoodLogEntry} from '@/components/macro-calculator/types';
+import {Badge} from '@/components/ui/badge';
+import {Button} from '@/components/ui/button';
+import {Card, CardContent} from '@/components/ui/card';
 import {
   formatValidationFlag,
   getMatchModeLabel,
@@ -13,7 +27,6 @@ import {
   getReviewerLabel,
   getSourceKindLabel,
 } from '@/lib/source-meta';
-import {NutritionDetailGrid} from '@/components/macro-calculator/nutrition-detail-grid';
 
 interface FoodLogListProps {
   entries: FoodLogEntry[];
@@ -34,8 +47,11 @@ const RELIABILITY_BAR_COLOR: Record<string, string> = {
 
 function getBarColor(badgeClass: string): string {
   for (const [key, color] of Object.entries(RELIABILITY_BAR_COLOR)) {
-    if (badgeClass.includes(key)) return color;
+    if (badgeClass.includes(key)) {
+      return color;
+    }
   }
+
   return 'bg-muted-foreground/30';
 }
 
@@ -87,6 +103,211 @@ function ReviewMetaSummary({
   );
 }
 
+function ValidationFlagBadges({flags}: {flags: FoodLogEntry['validationFlags']}) {
+  if (!flags.length) {
+    return null;
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-1">
+      {flags.map((flag) => (
+        <Badge
+          key={flag}
+          variant="outline"
+          className="rounded-full border-amber-200 text-[10px] text-amber-700 dark:border-amber-700 dark:text-amber-400"
+        >
+          <AlertTriangle className="mr-1 h-2.5 w-2.5" />
+          {formatValidationFlag(flag)}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+function NutrientMiniBar({
+  barColor,
+  icon,
+  label,
+  status,
+  unit,
+  value,
+}: {
+  barColor: string;
+  icon: React.ReactNode;
+  label: string;
+  status: 'measured' | 'estimated' | 'partial' | 'missing';
+  unit: string;
+  value: number | null;
+}) {
+  if (value === null || value === 0) {
+    return null;
+  }
+
+  const maxVisual = unit === 'kcal' ? 800 : 60;
+  const percent = Math.min((value / maxVisual) * 100, 100);
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        {icon}
+        <span className="font-semibold uppercase tracking-wider">{label}</span>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-secondary/60">
+          <div
+            className={`h-full rounded-full ${barColor} transition-all duration-500`}
+            style={{width: `${percent}%`}}
+          />
+        </div>
+        <span className="whitespace-nowrap text-[10px] font-bold tabular-nums text-foreground">
+          {status === 'partial' ? '>=' : ''}
+          {value.toFixed(1)}
+          <span className="ml-0.5 font-normal text-muted-foreground">{unit}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function FoodLogCard({
+  entry,
+  isExpanded,
+  onDelete,
+  onEdit,
+  onToggleExpanded,
+}: {
+  entry: FoodLogEntry;
+  isExpanded: boolean;
+  onDelete: (id: string) => void;
+  onEdit?: (entry: FoodLogEntry) => void;
+  onToggleExpanded: () => void;
+}) {
+  const reliability = getReliabilityMeta(entry);
+
+  return (
+    <Card className="group overflow-hidden border-none shadow-sm transition-all duration-300 hover:shadow-md">
+      <div className="flex">
+        <div className={`w-1 shrink-0 ${getBarColor(reliability.badgeClass)}`} />
+        <CardContent className="flex-1 p-4 sm:p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <h4 className="text-lg font-bold text-foreground">{entry.foodName}</h4>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Badge
+                  variant="outline"
+                  className={`rounded-full font-medium ${reliability.badgeClass}`}
+                >
+                  {reliability.label}
+                </Badge>
+                <Badge variant="outline" className="rounded-full text-muted-foreground">
+                  {getSourceKindLabel(entry.sourceKind)}
+                </Badge>
+                <Badge variant="outline" className="rounded-full text-muted-foreground">
+                  {getMatchModeLabel(entry.matchMode)}
+                </Badge>
+                <span className="text-xs text-muted-foreground">
+                  置信度 {Math.round(entry.confidence * 100)}%
+                </span>
+              </div>
+              <div className="mt-2 text-xs text-muted-foreground">{entry.sourceLabel}</div>
+              <ReviewMetaSummary reviewMeta={entry.reviewMeta} />
+
+              <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
+                <NutrientMiniBar
+                  label="热量"
+                  value={entry.totals.energyKcal}
+                  status={entry.totalsMeta.energyKcal.status}
+                  unit="kcal"
+                  icon={<Flame className="h-3 w-3 text-orange-500" />}
+                  barColor="bg-orange-500"
+                />
+                <NutrientMiniBar
+                  label="蛋白质"
+                  value={entry.totals.proteinGrams}
+                  status={entry.totalsMeta.proteinGrams.status}
+                  unit="g"
+                  icon={<Zap className="h-3 w-3 text-emerald-500" />}
+                  barColor="bg-emerald-500"
+                />
+                <NutrientMiniBar
+                  label="碳水"
+                  value={entry.totals.carbohydrateGrams}
+                  status={entry.totalsMeta.carbohydrateGrams.status}
+                  unit="g"
+                  icon={<Wheat className="h-3 w-3 text-lime-500" />}
+                  barColor="bg-lime-500"
+                />
+                <NutrientMiniBar
+                  label="脂肪"
+                  value={entry.totals.fatGrams}
+                  status={entry.totalsMeta.fatGrams.status}
+                  unit="g"
+                  icon={<Droplets className="h-3 w-3 text-sky-500" />}
+                  barColor="bg-sky-500"
+                />
+              </div>
+
+              <ValidationFlagBadges flags={entry.validationFlags} />
+
+              <div className="mt-3">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={onToggleExpanded}
+                  className="h-7 rounded-full px-2 text-xs text-muted-foreground hover:text-primary"
+                >
+                  {isExpanded ? (
+                    <>
+                      收起详情 <ChevronUp className="ml-1 h-3 w-3" />
+                    </>
+                  ) : (
+                    <>
+                      展开 23 项营养 <ChevronDown className="ml-1 h-3 w-3" />
+                    </>
+                  )}
+                </Button>
+              </div>
+
+              {isExpanded ? (
+                <div className="mt-3 animate-slide-expand">
+                  <NutritionDetailGrid profile={entry.totals} meta={entry.totalsMeta} />
+                </div>
+              ) : null}
+            </div>
+
+            <div className="shrink-0">
+              <div className="flex items-center gap-1 text-sm font-semibold text-foreground">
+                <Scale className="h-3.5 w-3.5 text-muted-foreground" />
+                {entry.estimatedGrams}g
+              </div>
+              <div className="mt-1.5 flex flex-col gap-1.5">
+                {onEdit ? (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full text-muted-foreground hover:text-primary"
+                    onClick={() => onEdit(entry)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 rounded-full text-muted-foreground hover:text-destructive"
+                  onClick={() => onDelete(entry.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </div>
+    </Card>
+  );
+}
+
 export function FoodLogList({
   entries,
   onDelete,
@@ -97,208 +318,43 @@ export function FoodLogList({
 }: FoodLogListProps) {
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
 
-  if (entries.length === 0) {
+  if (!entries.length) {
     return (
-      <div className="text-center py-16 px-4 rounded-2xl border-2 border-dashed border-muted-foreground/20 bg-card/50 dark:bg-card/30">
+      <div className="rounded-2xl border-2 border-dashed border-muted-foreground/20 bg-card/50 px-4 py-16 text-center dark:bg-card/30">
         <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-secondary/60">
           <UtensilsCrossed className="h-7 w-7 text-muted-foreground/50" />
         </div>
-        <p className="text-muted-foreground font-medium">{emptyTitle}</p>
-        <p className="text-xs text-muted-foreground/60 mt-1 max-w-sm mx-auto">{emptyDescription}</p>
+        <p className="font-medium text-muted-foreground">{emptyTitle}</p>
+        <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground/60">
+          {emptyDescription}
+        </p>
       </div>
     );
   }
 
   return (
     <div className="space-y-4">
-      <h3 className="font-headline font-semibold text-lg px-1 flex items-center gap-2">
+      <h3 className="flex items-center gap-2 px-1 text-lg font-semibold font-headline">
         {listTitle}
-        <span className="text-xs font-normal text-muted-foreground bg-secondary px-2 py-0.5 rounded-full">
+        <span className="rounded-full bg-secondary px-2 py-0.5 text-xs font-normal text-muted-foreground">
           {entries.length} 项
         </span>
       </h3>
-      {entries.map((entry, entryIndex) => (
-        <Card key={entry.id} className={`group overflow-hidden border-none shadow-sm hover:shadow-md transition-all duration-300 animate-fade-in-up stagger-${Math.min(entryIndex + 1, 6)}`}>
-          <div className="flex">
-            {/* Left reliability color bar */}
-            {(() => {
-              const reliability = getReliabilityMeta(entry);
-              return <div className={`w-1 shrink-0 ${getBarColor(reliability.badgeClass)}`} />;
-            })()}
-            <CardContent className="flex-1 p-4 sm:p-5">
-              {(() => {
-                const isExpanded = Boolean(expandedIds[entry.id]);
-                const reliability = getReliabilityMeta(entry);
-
-                return (
-              <div className="flex justify-between items-start gap-4">
-                <div className="flex-1">
-                  <h4 className="font-bold text-lg text-foreground">{entry.foodName}</h4>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <Badge variant="outline" className={`rounded-full font-medium ${reliability.badgeClass}`}>
-                      {reliability.label}
-                    </Badge>
-                    <Badge variant="outline" className="rounded-full text-muted-foreground">
-                      {getSourceKindLabel(entry.sourceKind)}
-                    </Badge>
-                    <Badge variant="outline" className="rounded-full text-muted-foreground">
-                      {getMatchModeLabel(entry.matchMode)}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground">
-                      置信度 {Math.round(entry.confidence * 100)}%
-                    </span>
-                  </div>
-                  <div className="mt-2 text-xs text-muted-foreground">
-                    {entry.sourceLabel}
-                  </div>
-                  <ReviewMetaSummary reviewMeta={entry.reviewMeta} />
-
-                  {/* Compact macro summary with mini progress bars */}
-                  <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
-                    <NutrientMiniBar
-                      label="热量"
-                      value={entry.totals.energyKcal}
-                      status={entry.totalsMeta.energyKcal.status}
-                      unit="kcal"
-                      icon={<Flame className="h-3 w-3 text-orange-500" />}
-                      barColor="bg-orange-500"
-                    />
-                    <NutrientMiniBar
-                      label="蛋白质"
-                      value={entry.totals.proteinGrams}
-                      status={entry.totalsMeta.proteinGrams.status}
-                      unit="g"
-                      icon={<Zap className="h-3 w-3 text-emerald-500" />}
-                      barColor="bg-emerald-500"
-                    />
-                    <NutrientMiniBar
-                      label="碳水"
-                      value={entry.totals.carbohydrateGrams}
-                      status={entry.totalsMeta.carbohydrateGrams.status}
-                      unit="g"
-                      icon={<Wheat className="h-3 w-3 text-lime-500" />}
-                      barColor="bg-lime-500"
-                    />
-                    <NutrientMiniBar
-                      label="脂肪"
-                      value={entry.totals.fatGrams}
-                      status={entry.totalsMeta.fatGrams.status}
-                      unit="g"
-                      icon={<Droplets className="h-3 w-3 text-sky-500" />}
-                      barColor="bg-sky-500"
-                    />
-                  </div>
-
-                  {entry.validationFlags.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {entry.validationFlags.map((flag) => (
-                        <Badge key={flag} variant="outline" className="rounded-full text-[10px] text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-700">
-                          <AlertTriangle className="mr-1 h-2.5 w-2.5" />
-                          {formatValidationFlag(flag)}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="mt-3">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() =>
-                        setExpandedIds((prev) => ({
-                          ...prev,
-                          [entry.id]: !prev[entry.id],
-                        }))
-                      }
-                      className="rounded-full text-xs text-muted-foreground hover:text-primary px-2 h-7"
-                    >
-                      {isExpanded ? (
-                        <>收起详情 <ChevronUp className="ml-1 h-3 w-3" /></>
-                      ) : (
-                        <>展开 23 项营养 <ChevronDown className="ml-1 h-3 w-3" /></>
-                      )}
-                    </Button>
-                  </div>
-
-                  {isExpanded && (
-                    <div className="mt-3 animate-slide-expand">
-                      <NutritionDetailGrid profile={entry.totals} meta={entry.totalsMeta} />
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex flex-col gap-1.5 shrink-0">
-                  <div className="flex items-center gap-1 text-sm font-semibold text-foreground">
-                    <Scale className="h-3.5 w-3.5 text-muted-foreground" />
-                    {entry.estimatedGrams}g
-                  </div>
-                  {onEdit && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8 rounded-full text-muted-foreground hover:text-primary"
-                      onClick={() => onEdit(entry)}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 rounded-full text-muted-foreground hover:text-destructive"
-                    onClick={() => onDelete(entry.id)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
-                );
-              })()}
-            </CardContent>
-          </div>
-        </Card>
+      {entries.map((entry) => (
+        <FoodLogCard
+          key={entry.id}
+          entry={entry}
+          isExpanded={Boolean(expandedIds[entry.id])}
+          onDelete={onDelete}
+          onEdit={onEdit}
+          onToggleExpanded={() =>
+            setExpandedIds((current) => ({
+              ...current,
+              [entry.id]: !current[entry.id],
+            }))
+          }
+        />
       ))}
-    </div>
-  );
-}
-
-function NutrientMiniBar({
-  label,
-  value,
-  status,
-  unit,
-  icon,
-  barColor,
-}: {
-  label: string;
-  value: number | null;
-  status: 'measured' | 'estimated' | 'partial' | 'missing';
-  unit: string;
-  icon: React.ReactNode;
-  barColor: string;
-}) {
-  if (value === null || value === 0) return null;
-
-  // Use a simple relative bar — cap at a reasonable visual max
-  const maxVisual = unit === 'kcal' ? 800 : 60;
-  const pct = Math.min((value / maxVisual) * 100, 100);
-
-  return (
-    <div className="flex flex-col gap-0.5">
-      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
-        {icon}
-        <span className="font-semibold uppercase tracking-wider">{label}</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <div className="h-1.5 flex-1 rounded-full bg-secondary/60 overflow-hidden">
-          <div className={`h-full rounded-full ${barColor} transition-all duration-500`} style={{width: `${pct}%`}} />
-        </div>
-        <span className="text-[10px] font-bold text-foreground tabular-nums whitespace-nowrap">
-          {status === 'partial' ? '>=' : ''}
-          {value.toFixed(1)}
-          <span className="font-normal text-muted-foreground ml-0.5">{unit}</span>
-        </span>
-      </div>
     </div>
   );
 }

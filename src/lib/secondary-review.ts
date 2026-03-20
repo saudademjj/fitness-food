@@ -1,9 +1,7 @@
 import {
-  ParseFoodDescriptionOutputSchema,
   type AiReviewedFoodItem,
   type FoodReviewMeta,
   type ParseFoodDescriptionOutput,
-  type ParseFoodDescriptionSegment,
   type ReviewerVote,
   type ResolvedFoodItem,
   type ResolvedFoodItems,
@@ -11,7 +9,10 @@ import {
 } from '@/lib/food-contract';
 import {normalizeLookupText, parseQuantity, sanitizeFoodName} from '@/lib/food-text';
 import {
-  aggregateNutritionProfiles,
+  createSingleSegmentOutput,
+  rebuildOutputFromItems,
+} from '@/lib/food-parse-output';
+import {
   buildNutritionProfileMeta,
   cloneNutritionProfileMeta,
   createNutritionProfile,
@@ -21,42 +22,21 @@ import {
   type NutritionProfileMeta23,
 } from '@/lib/nutrition-profile';
 import {
-  getDeepseekReviewModel,
-  reviewResolvedFoodsWithDeepseek,
-} from '@/lib/deepseek';
-import {
-  getOpenRouterMinimaxReviewModel,
-  reviewResolvedFoodsWithOpenRouterMinimax,
-} from '@/lib/openrouter-review';
-import {reviewResolvedFoodsWithPrimaryModel} from '@/lib/primary-model';
+  clearReviewerCooldown,
+  formatReviewerCooldownMessage,
+  getDefaultReviewers,
+  getReviewerCooldown,
+  getReviewerLabel,
+  markReviewerCooldown,
+  runSecondaryReviewers,
+  summarizeReviewerFailure,
+  type SecondaryReviewer,
+} from '@/lib/secondary-review-reviewers';
 import {recordRuntimeError} from '@/lib/runtime-observability';
 import {dedupeValidationFlags} from '@/lib/validation';
 
-type SecondaryReviewer = {
-  provider: string;
-  serialGroup?: string;
-  review: (
-    sourceDescription: string,
-    foods: ResolvedFoodItems,
-    weightLocks: boolean[]
-  ) => Promise<AiReviewedFoodItem[]>;
-};
-
-type ReviewerCooldownState = {
-  disabledUntil: number;
-  reasonKind: 'rate_limit' | 'timeout' | 'transient';
-};
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __fitnessFoodReviewerCooldowns:
-    | Map<string, ReviewerCooldownState>
-    | undefined;
-}
-
 export type SecondaryReviewSummary = SecondaryReviewSummaryContract;
 
-const OPTIONAL_REVIEWER_COOLDOWN_MS = 10 * 60 * 1000;
 const MIN_SUCCESSFUL_REVIEWERS_FOR_CONSENSUS = 2;
 const REVIEW_CONSENSUS_SUPPORT_THRESHOLD = 0.68;
 const CORE_REVIEW_KEYS = [
@@ -66,98 +46,12 @@ const CORE_REVIEW_KEYS = [
   'fatGrams',
 ] as const;
 
-function readBooleanEnv(names: string | string[], fallback = false): boolean {
-  for (const name of Array.isArray(names) ? names : [names]) {
-    const raw = process.env[name]?.trim().toLowerCase();
-    if (!raw) {
-      continue;
-    }
-
-    if (['1', 'true', 'yes', 'on'].includes(raw)) {
-      return true;
-    }
-
-    if (['0', 'false', 'no', 'off'].includes(raw)) {
-      return false;
-    }
-  }
-
-  return fallback;
-}
-
-function readPositiveIntegerEnv(
-  names: string | string[],
-  fallback: number
-): number {
-  for (const name of Array.isArray(names) ? names : [names]) {
-    const raw = process.env[name]?.trim();
-    if (!raw) {
-      continue;
-    }
-
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-
-  return fallback;
-}
-
-function isOptionalReviewerEnabled(
-  kind: 'openrouter_minimax' | 'deepseek'
-): boolean {
-  if (kind === 'openrouter_minimax') {
-    return readBooleanEnv(
-      [
-        'SECONDARY_REVIEW_ENABLE_OPENROUTER_MINIMAX',
-        'SECONDARY_REVIEW_ENABLE_MINIMAX_REVIEWER',
-        'SECONDARY_REVIEW_ENABLE_SCNET',
-        'SCNET_ENABLE_SECONDARY_REVIEW',
-      ],
-      true
-    );
-  }
-
-  return readBooleanEnv(
-    ['SECONDARY_REVIEW_ENABLE_DEEPSEEK', 'DEEPSEEK_ENABLE_SECONDARY_REVIEW'],
-    true
-  );
-}
-
-function getOptionalReviewerCooldownMs(): number {
-  return readPositiveIntegerEnv(
-    [
-      'SECONDARY_REVIEW_PROVIDER_COOLDOWN_MS',
-      'SECONDARY_REVIEW_FAILURE_COOLDOWN_MS',
-    ],
-    OPTIONAL_REVIEWER_COOLDOWN_MS
-  );
-}
-
 function roundToSingleDecimal(value: number): number {
   return Number(value.toFixed(1));
 }
 
 function roundToTwoDecimals(value: number): number {
   return Number(value.toFixed(2));
-}
-
-function calculateOverallConfidence(items: ResolvedFoodItems): number {
-  const totalWeight = items.reduce((sum, item) => sum + item.estimatedGrams, 0);
-  if (!totalWeight) {
-    return 0;
-  }
-
-  const weightedConfidence = items.reduce(
-    (sum, item) => sum + item.confidence * item.estimatedGrams,
-    0
-  );
-  return roundToTwoDecimals(weightedConfidence / totalWeight);
-}
-
-function sumWeight(items: ResolvedFoodItems): number {
-  return items.reduce((sum, item) => sum + item.estimatedGrams, 0);
 }
 
 function hasExplicitMetricWeight(item: ResolvedFoodItem): boolean {
@@ -202,155 +96,6 @@ function clamp01(value: number): number {
   return value;
 }
 
-function getReviewerLabel(provider: string): string {
-  switch (provider) {
-    case 'primary_model':
-    case 'openrouter':
-    case 'dashscope':
-      return '主模型';
-    case 'minimax':
-      return 'MiniMax';
-    case 'deepseek':
-      return 'DeepSeek';
-    default:
-      return provider;
-  }
-}
-
-function getReviewerCooldownStore(): Map<string, ReviewerCooldownState> {
-  if (!global.__fitnessFoodReviewerCooldowns) {
-    global.__fitnessFoodReviewerCooldowns = new Map();
-  }
-
-  return global.__fitnessFoodReviewerCooldowns;
-}
-
-function detectReviewerCooldownReason(
-  message: string
-): ReviewerCooldownState['reasonKind'] | null {
-  const normalized = message.trim().toLowerCase();
-
-  if (
-    normalized.includes('429') ||
-    normalized.includes('rate limited') ||
-    normalized.includes('rate-limit') ||
-    normalized.includes('temporarily rate-limited') ||
-    normalized.includes('quota')
-  ) {
-    return 'rate_limit';
-  }
-
-  if (
-    normalized.includes('timed out') ||
-    normalized.includes('timeout') ||
-    normalized.includes('time out')
-  ) {
-    return 'timeout';
-  }
-
-  if (
-    normalized.includes('temporarily unavailable') ||
-    normalized.includes('overloaded') ||
-    normalized.includes('upstream')
-  ) {
-    return 'transient';
-  }
-
-  return null;
-}
-
-function shouldUseReviewerCooldown(provider: string): boolean {
-  return provider !== 'primary_model';
-}
-
-function getReviewerCooldown(provider: string): ReviewerCooldownState | null {
-  if (!shouldUseReviewerCooldown(provider)) {
-    return null;
-  }
-
-  const store = getReviewerCooldownStore();
-  const state = store.get(provider);
-  if (!state) {
-    return null;
-  }
-
-  if (state.disabledUntil <= Date.now()) {
-    store.delete(provider);
-    return null;
-  }
-
-  return state;
-}
-
-function clearReviewerCooldown(provider: string): void {
-  if (!shouldUseReviewerCooldown(provider)) {
-    return;
-  }
-
-  getReviewerCooldownStore().delete(provider);
-}
-
-function markReviewerCooldown(provider: string, message: string): void {
-  if (!shouldUseReviewerCooldown(provider)) {
-    return;
-  }
-
-  const reasonKind = detectReviewerCooldownReason(message);
-  if (!reasonKind) {
-    return;
-  }
-
-  getReviewerCooldownStore().set(provider, {
-    disabledUntil: Date.now() + getOptionalReviewerCooldownMs(),
-    reasonKind,
-  });
-}
-
-function formatReviewerCooldownMessage(
-  provider: string,
-  state: ReviewerCooldownState
-): string {
-  const secondsRemaining = Math.max(
-    1,
-    Math.ceil((state.disabledUntil - Date.now()) / 1000)
-  );
-  const reasonLabel =
-    state.reasonKind === 'rate_limit'
-      ? '限流'
-      : state.reasonKind === 'timeout'
-        ? '超时'
-        : '暂时不可用';
-
-  return `${getReviewerLabel(provider)} 冷却中：上次${reasonLabel}后还需等待约 ${secondsRemaining} 秒`;
-}
-
-function summarizeReviewerFailure(provider: string, message: string): string {
-  const label = getReviewerLabel(provider);
-  const normalized = message.trim().toLowerCase();
-  const cooldownReason = detectReviewerCooldownReason(message);
-
-  if (normalized.includes('incompatible_review_result')) {
-    return `${label} 返回结果不可兼容`;
-  }
-
-  if (cooldownReason === 'rate_limit') {
-    return `${label} 速率限制`;
-  }
-
-  if (cooldownReason === 'timeout') {
-    return `${label} 超时`;
-  }
-
-  if (cooldownReason === 'transient') {
-    return `${label} 暂时不可用`;
-  }
-
-  if (normalized.includes('not configured')) {
-    return `${label} 未配置`;
-  }
-
-  return `${label} 未返回`;
-}
 
 function pushFailureReason(reasons: string[], reason: string): void {
   if (reason && !reasons.includes(reason)) {
@@ -698,218 +443,6 @@ function isCompatibleReview(
   });
 }
 
-function rebuildSegment(
-  segment: ParseFoodDescriptionSegment,
-  items: ResolvedFoodItems
-): ParseFoodDescriptionSegment {
-  const totals = aggregateNutritionProfiles(
-    items.map((item) => ({
-      profile: item.totals,
-      meta: item.totalsMeta,
-    }))
-  );
-
-  return {
-    ...segment,
-    items,
-    totalNutrition: totals.profile,
-    totalNutritionMeta: totals.meta,
-    totalWeight: sumWeight(items),
-    overallConfidence: calculateOverallConfidence(items),
-  };
-}
-
-function rebuildOutputFromItems(
-  output: ParseFoodDescriptionOutput,
-  items: ResolvedFoodItems
-): ParseFoodDescriptionOutput {
-  let offset = 0;
-
-  const segments = output.segments.map((segment) => {
-    const nextItems = items.slice(offset, offset + segment.items.length);
-    offset += segment.items.length;
-    return rebuildSegment(segment, nextItems);
-  });
-
-  const totals = aggregateNutritionProfiles(
-    items.map((item) => ({
-      profile: item.totals,
-      meta: item.totalsMeta,
-    }))
-  );
-
-  return ParseFoodDescriptionOutputSchema.parse({
-    ...output,
-    totalNutrition: totals.profile,
-    totalNutritionMeta: totals.meta,
-    totalWeight: sumWeight(items),
-    overallConfidence: calculateOverallConfidence(items),
-    items,
-    segments,
-    secondaryReviewSummary: output.secondaryReviewSummary ?? null,
-  });
-}
-
-function createSingleSegmentOutput(
-  foods: ResolvedFoodItems,
-  sourceDescription: string
-): ParseFoodDescriptionOutput {
-  const totals = aggregateNutritionProfiles(
-    foods.map((item) => ({
-      profile: item.totals,
-      meta: item.totalsMeta,
-    }))
-  );
-
-  return ParseFoodDescriptionOutputSchema.parse({
-    compositeDishName: null,
-    totalNutrition: totals.profile,
-    totalNutritionMeta: totals.meta,
-    totalWeight: sumWeight(foods),
-    overallConfidence: calculateOverallConfidence(foods),
-    items: foods,
-    segments: [
-      {
-        sourceDescription,
-        compositeDishName: null,
-        resolutionKind: 'direct_items',
-        totalNutrition: totals.profile,
-        totalNutritionMeta: totals.meta,
-        totalWeight: sumWeight(foods),
-        overallConfidence: calculateOverallConfidence(foods),
-        items: foods,
-        ingredientBreakdown: [],
-      },
-    ],
-    secondaryReviewSummary: null,
-  });
-}
-
-function getDefaultReviewers(): SecondaryReviewer[] {
-  const deepseekReviewModel = getDeepseekReviewModel();
-  const openRouterMinimaxReviewModel = getOpenRouterMinimaxReviewModel();
-  const openRouterSerialGroup = process.env.OPENROUTER_API_KEY?.trim()
-    ? 'openrouter'
-    : undefined;
-
-  return [
-    {
-      provider: 'primary_model',
-      serialGroup: openRouterSerialGroup,
-      review: reviewResolvedFoodsWithPrimaryModel,
-    },
-    ...(isOptionalReviewerEnabled('openrouter_minimax') && openRouterMinimaxReviewModel
-      ? [
-          {
-            provider: openRouterMinimaxReviewModel.provider,
-            serialGroup: openRouterSerialGroup,
-            review: reviewResolvedFoodsWithOpenRouterMinimax,
-          } satisfies SecondaryReviewer,
-        ]
-      : []),
-    ...(isOptionalReviewerEnabled('deepseek') && deepseekReviewModel
-      ? [
-          {
-            provider: deepseekReviewModel.provider,
-            review: reviewResolvedFoodsWithDeepseek,
-          } satisfies SecondaryReviewer,
-        ]
-      : []),
-  ];
-}
-
-async function runSecondaryReviewers(params: {
-  reviewers: SecondaryReviewer[];
-  sourceDescription: string;
-  foods: ResolvedFoodItems;
-  weightLocks: boolean[];
-}): Promise<Array<{
-  provider: string;
-  result: PromiseSettledResult<{provider: string; items: AiReviewedFoodItem[]}>;
-}>> {
-  const independent: SecondaryReviewer[] = [];
-  const grouped = new Map<string, SecondaryReviewer[]>();
-
-  for (const reviewer of params.reviewers) {
-    if (!reviewer.serialGroup) {
-      independent.push(reviewer);
-      continue;
-    }
-
-    const bucket = grouped.get(reviewer.serialGroup) ?? [];
-    bucket.push(reviewer);
-    grouped.set(reviewer.serialGroup, bucket);
-  }
-
-  const independentResults = await Promise.all(
-    independent.map(async (reviewer) => {
-      try {
-        return {
-          provider: reviewer.provider,
-          result: {
-            status: 'fulfilled' as const,
-            value: {
-              provider: reviewer.provider,
-              items: await reviewer.review(
-                params.sourceDescription,
-                params.foods,
-                params.weightLocks
-              ),
-            },
-          },
-        };
-      } catch (reason) {
-        return {
-          provider: reviewer.provider,
-          result: {
-            status: 'rejected' as const,
-            reason,
-          },
-        };
-      }
-    })
-  );
-
-  const groupedResults = await Promise.all(
-    Array.from(grouped.values()).map(async (reviewers) => {
-      const results: Array<{
-        provider: string;
-        result: PromiseSettledResult<{provider: string; items: AiReviewedFoodItem[]}>;
-      }> = [];
-
-      for (const reviewer of reviewers) {
-        try {
-          results.push({
-            provider: reviewer.provider,
-            result: {
-              status: 'fulfilled',
-              value: {
-                provider: reviewer.provider,
-                items: await reviewer.review(
-                  params.sourceDescription,
-                  params.foods,
-                  params.weightLocks
-                ),
-              },
-            },
-          });
-        } catch (reason) {
-          results.push({
-            provider: reviewer.provider,
-            result: {
-              status: 'rejected',
-              reason,
-            },
-          });
-        }
-      }
-
-      return results;
-    })
-  );
-
-  return [...independentResults, ...groupedResults.flat()];
-}
 
 export function buildParseOutputFromFoods(
   foods: ResolvedFoodItems,
